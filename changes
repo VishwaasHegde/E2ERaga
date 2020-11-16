@@ -1,0 +1,7 @@
+change to try next:
+1. taking tonic embs only corresponding to (-4,5) interval
+2. softmax on tonic instead of sigmoid
+3. take the argmax of tonic
+4. Add slight randomness to the notes
+5.
+5. training end to end
