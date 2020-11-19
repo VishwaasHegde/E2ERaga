@@ -24,7 +24,7 @@ import os
 import json
 import pandas as pd
 from collections import defaultdict
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 
 import encoder_3
 
@@ -250,7 +250,7 @@ def get_tonic_emb(red_y, note_emb, note_dim, drop_rate=0.2):
     tonic_cnn = get_tonic_from_cnn(red_y, note_emb, note_dim, drop_rate)  # (60, 32)
     tonic_rnn = get_tonic_from_rnn(red_y, note_emb, note_dim, drop_rate)
 
-    f = tf.nn.sigmoid(Dense(note_dim)(tf.concat([tonic_cnn, tonic_rnn], axis=1)))
+    f = tf.nn.sigmoid(Dense(note_dim, activation='sigmoid')(tf.concat([tonic_cnn, tonic_rnn], axis=1)))
     # f= 0
     tonic_emb = f * tonic_cnn + (1 - f) * tonic_rnn
     return tonic_emb
@@ -431,7 +431,7 @@ def get_rag_emb_3(red_y, tonic_logits, note_emb, note_dim, drop_rate=0.25):
 
     diag_tf = tf.reduce_mean(red_y, axis=0)
     # diag_tf = tf.concat([diag_tf[-5:], diag_tf, diag_tf[:5]], axis=-1)
-    # diag_tf = AvgPool1D(pool_size=2, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(diag_tf, 0), 2))[0, :, 0]
+    # diag_tf = AvgPool1D(pool_size=5, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(diag_tf, 0), 2))[0, :, 0]
     diag_tf_p = tf.roll(diag_tf, 1, 0)
     diag_tf_n = tf.roll(diag_tf, -1, 0)
     diag_tf_1 = tf.less_equal(diag_tf_p, diag_tf)
@@ -467,6 +467,8 @@ def get_rag_emb_3(red_y, tonic_logits, note_emb, note_dim, drop_rate=0.25):
         red_y_ndms.append(red_y_am_trans)
     hist_cc_all = tf.stack(hist_cc_all)
     red_y_ndms = tf.stack(red_y_ndms)
+
+    # encoding = get_raga_from_transformer(red_y_ndms, note_emb, note_dim, drop_rate)
     encoding = get_rag_from_rnn(red_y_ndms, note_emb, note_dim, drop_rate)
 
     z = Conv1D(filters=128, kernel_size=5, strides=1,padding='valid', activation='relu')(hist_cc_all)
@@ -485,8 +487,9 @@ def get_rag_emb_3(red_y, tonic_logits, note_emb, note_dim, drop_rate=0.25):
     # z = tf.concat([z, diag_tf_3_den], axis=1)
     z = Dense(2 * note_dim, activation='relu')(z)
 
-    f = tf.nn.sigmoid(Dense(2*note_dim)(tf.concat([z, encoding], axis=1)))
-
+    f = tf.nn.sigmoid(Dense(2*note_dim, activation='sigmoid')(tf.concat([z, encoding], axis=1)))
+    # f = 0
+    # raga_emb = encoding
     raga_emb = f*z+(1-f)*encoding
     # raga_emb = z
     tonic_logits = tf.transpose(tonic_logits)
@@ -504,12 +507,38 @@ def get_rag_from_rnn(red_y_am, note_emb_add, note_dim, dropout):
     embs = tf.gather(note_emb_add, red_y_am)
     if len(embs.shape)==2:
         embs = tf.expand_dims(embs, 0)
-    rnn_1 = Bidirectional(LSTM(note_dim, return_sequences=True, recurrent_dropout=dropout))(embs)
-    rnn_1 = Dropout(dropout)(rnn_1)
-    rnn_1 = Bidirectional(LSTM(note_dim))(rnn_1)
+    rnn_1 = Bidirectional(LSTM(note_dim, return_sequences=True, recurrent_dropout=dropout, dropout=dropout))(embs)
+    # rnn_1 = Dropout(dropout)(rnn_1)
+    # rnn_1 = Bidirectional(LSTM(note_dim, return_sequences=True, recurrent_dropout=dropout, dropout=dropout))(rnn_1)
+    # rnn_1 = Dropout(dropout)(rnn_1)
+    rnn_2 = Bidirectional(LSTM(note_dim, recurrent_dropout=dropout, dropout=dropout))(rnn_1)
     # rnn_1 = tf.expand_dims(rnn_1[0],0)
 
-    return Dense(2 * note_dim, activation='relu')(rnn_1)
+    out = tf.concat([rnn_1[:,-1,:], rnn_2], axis=1)
+    f = Dense(2*note_dim, activation='sigmoid')(out)
+    out = f*rnn_1[:,-1,:] + (1-f)*rnn_2
+    return Dense(2 * note_dim, activation='relu')(out)
+
+def get_raga_from_transformer(red_y_am, note_emb_add, note_dim, dropout):
+    max_len = 500
+    red_y_am = red_y_am[:,:max_len]
+    pad_len = max_len-tf.shape(red_y_am)[1]
+
+    # mask_seq = tf.expand_dims(tf.sequence_mask(tf.shape(red_y_am)[1], max_len), 0)
+    # mask_seq = tf.tile(mask_seq, [10,1])
+    mask_seq = tf.ones_like(red_y_am, tf.float32)
+    red_y_am = tf.pad(red_y_am, [[0, 0], [0, pad_len]])
+    mask_seq = tf.pad(mask_seq, [[0, 0], [0, pad_len]])
+    mask_seq = tf.expand_dims(mask_seq,2)
+
+    raga_enc = Encoder(note_emb_add, enc_num=1, sequence_length=max_len, N=4, size=note_dim)
+    # encoding = raga_enc.encode(red_y_am, mask_seq, None, True)
+    # encoding = encoder_3.encode(red_y_am, note_emb_add, None, mask_seq, 4, d_model=note_dim)
+
+    encoding = encoder_3.encode(red_y_am, note_emb_add, None, mask_seq, 4, d_model=note_dim, dropout=0)
+    encoding = tf.reduce_mean(encoding, axis=1)
+    # encoding = encoding[:,-1,:]
+    return encoding
 
 def min_max_scale(y):
     # y_min = tf.reduce_min(y)
@@ -732,8 +761,9 @@ def train(task, tradition):
 
         checkpoint = ModelCheckpoint(raga_model_path, monitor='loss', verbose=1,
                                      save_best_only=True, mode='auto', period=1)
+        early_stopping_callback = EarlyStopping(monitor="val_loss", patience=3, mode="auto", restore_best_weights=True, min_delta=0.0000001)
         model.fit_generator(generator=training_generator,
-                            validation_data=validation_generator, verbose=1, epochs=15, shuffle=False, callbacks=[checkpoint])
+                            validation_data=validation_generator, verbose=1, epochs=15, shuffle=False, callbacks=[checkpoint, early_stopping_callback])
 
 def train_tonic(tradition):
     task = 'tonic'
