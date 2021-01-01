@@ -9,6 +9,9 @@ import math
 from pydub import AudioSegment
 from resampy import resample
 import matplotlib.pyplot as plt
+from tensorflow.keras.layers import Lambda
+import tensorflow as tf
+import h5py
 
 class DataGenerator(Sequence):
     'Generates data for Keras'
@@ -35,11 +38,15 @@ class DataGenerator(Sequence):
         # data = data.set_index('mbid')
         self.list_IDs = data['path']
         self.data = data
-        if process == 'test':
-            self.shuffle = False
-            # self.current_data = [None, None, None]
-        else:
+        if process=='train':
             self.shuffle = True
+        else:
+            self.shuffle = False
+
+        bce = tf.keras.losses.BinaryCrossentropy()
+        self.bce_layer = Lambda(lambda tensors: bce(tensors[0], tensors[1]))
+
+        self.lm_file = h5py.File('data/RagaDataset/Hindustani/cqt_cache.hdf5', "r")
 
         # self.indexes = np.arange(len(self.list_IDs))
         self.on_epoch_end()
@@ -68,7 +75,7 @@ class DataGenerator(Sequence):
 
         all_data = []
         id = 0
-        for path, old_path, file_len, tonic, label in data[['path', 'old_path', 'len', 'tonic_fine', 'labels']].values:
+        for path, old_path, file_len, tonic, mbid, label in data[['path', 'old_path', 'len', 'tonic_fine', 'mbid', 'labels']].values:
             if label<30:
                 n_cutoff = int(file_len/cutoff)
                 # n_cutoff = 1000
@@ -83,6 +90,7 @@ class DataGenerator(Sequence):
                     json_data['pitch_path'] = pitch_path
                     json_data['slice'] = i
                     json_data['tonic'] = tonic
+                    json_data['mbid'] = mbid
                     json_data['labels'] = label
                     json_data['n_cutoff'] = 1000
                     all_data.append(json_data)
@@ -105,7 +113,7 @@ class DataGenerator(Sequence):
             # id = self.data.index[index]
             path = self.data.loc[index, 'path']
             slice_ind = None
-            if not self.random:
+            if not self.shuffle:
                 slice_ind = self.data.loc[index, 'slice']
             # print(index_un,index, slice_ind)
             X, y = self.__data_generation_pitch(index, path, slice_ind)
@@ -143,16 +151,20 @@ class DataGenerator(Sequence):
         elif self.task=='raga':
             # index = 15
             path = self.data.loc[index, 'path']
+            mbid = self.data.loc[index, 'mbid']
+            # path = 'data\\RagaDataset\\audio\\077d538e-545a-4098-8997-76742fb26d39.wav'
+            # mbid = '077d538e-545a-4098-8997-76742fb26d39.wav'
             # print(path)
             slice_ind = None
-            if not self.random:
+
+            if not self.shuffle:
                 slice_ind = self.data.loc[index, 'slice']
             tonic = self.data.loc[index, 'tonic']
             y_tonic = self.freq_to_cents(tonic, 25)
             y_tonic = np.reshape(y_tonic, [-1, 6, 60])
             y_tonic = np.sum(y_tonic, axis=1)
             # y_tonic = np.array([y_tonic])
-            pitches = self.__data_generation_raga(index, path, slice_ind)
+            pitches, cqt = self.__data_generation_raga(index, path, mbid, slice_ind)
             # X, pitches = self.__data_generation_pitch(index, path, slice_ind)
             # X = [X]
             pitches = np.array([pitches])
@@ -165,18 +177,42 @@ class DataGenerator(Sequence):
             # return {'x_input':X[0], 'chroma_input':X[1], 'energy_input':X[2], 'tonic_input': y_tonic} , {'tf_op_layer_tonic':y_tonic, 'raga':y_raga}
             # return {'x_input': X[0], 'chroma_input': X[1], 'energy_input': X[2], 'tonic_input': y_tonic}, {'raga': y_raga}
             # return {'pitches_input':pitches, 'tonic_input': y_tonic}, {'raga': y_raga}
-            transpose_by = np.random.randint(60, dtype=np.int32)
+            transpose_by_1 = np.random.randint(20, dtype=np.int32)
+            transpose_by_2 = np.random.randint(20, dtype=np.int32)
+            # bce = self.get_bce_tonic(y_tonic, transpose_by_1, transpose_by_2)
+            transpose_by_1 = np.expand_dims(transpose_by_1,0)
+            transpose_by_2 = np.expand_dims(transpose_by_2, 0)
+            shuffle = np.array([self.shuffle], dtype=np.int32)
+            # print(tonic)
+            # shuffle = np.array([True], dtype=np.int32)
+            # bce = np.expand_dims(bce,0)
             # transpose_by = 0
-            y_tonic = np.roll(y_tonic, -transpose_by, axis=1)
-            transpose_by = np.array([transpose_by])
-            # return {'pitches_input': pitches, 'transpose_input':transpose_by}, {'raga': y_raga, 'tonic': y_tonic}
-            return {'pitches_input': pitches, 'transpose_input': transpose_by}, {'raga': y_raga}
-            # return {'pitches_input': pitches, 'tonic_input': y_tonic, 'transpose_input': transpose_by}, {'raga': y_raga}
-            # return {'x_input': pitches, 'tonic_input': y_tonic, 'transpose_input': transpose_by}, {'raga': y_raga}
-            # return {'pitches_input': pitches}, {'raga': y_raga}
+            # y_tonic = np.roll(y_tonic, -transpose_by, axis=1)
+            # y_tonic = self.freq_to_cents(31.7)
+            # transpose_by = np.array([transpose_by])
+            # return {'pitches_input': pitches, 'transpose_by_1_input':np.array([transpose_by_1]), 'transpose_by_2_input':np.array([transpose_by_2])}, {'raga': y_raga, 'tf_op_layer_ExpandDims_20': np.expand_dims(bce,0), 'tf_op_layer_Roll_410':y_tonic, 'tf_op_layer_Roll_411':y_tonic}
+            # return {'pitches_input': pitches, 'transpose_by_1_input': transpose_by_1, 'transpose_by_2_input': transpose_by_2}, {'tf_op_layer_ExpandDims_20': bce, 'raga': y_raga, 'raga_1': y_raga}
+            # return {'pitches_input': pitches, 'transpose_by_1_input': transpose_by_1, 'transpose_by_2_input': transpose_by_2}, {'tf_op_layer_ExpandDims_20': bce, 'tf_op_layer_ExpandDims_21': np.array([0])}
+
+            # return {'pitches_input': pitches, 'transpose_by_1_input': transpose_by_1,
+            #         'transpose_by_2_input': transpose_by_2}, {'tf_op_layer_ExpandDims_20': bce}
+            return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input':cqt}, {'raga': y_raga, 'tf_op_layer_tonic': y_tonic}
+            # return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt}, {'raga': y_raga}
+            # return {'pitches_input': pitches, 'random_input': np.array([self.shuffle], dtype=np.int32)}, {'raga': y_raga, 'tf_op_layer_tonic': y_tonic}
+            # return {'pitches_input': pitches, 'tonic_input':y_tonic}, {'raga': y_raga}
+            # return {'pitches_input': pitches}, {'raga': y_raga, 'tf_op_layer_ExpandDims_18': np.array([0.0]), 'tf_op_layer_ExpandDims_19': np.array([-20.0])}
             # return X, y_tonic, y_raga
         else:
             raise ValueError('Unknown task')
+
+    def get_bce_tonic(self, y_tonic, transpose_by_1, transpose_by_2):
+        y_tonic_1 = np.roll(y_tonic, -transpose_by_1, axis=1)
+        y_tonic_2 = np.roll(y_tonic, -transpose_by_2, axis=1)
+        return self.cross_entropy(y_tonic_1, y_tonic_2)
+
+    # calculate cross entropy
+    def cross_entropy(self, p, q):
+        return self.bce_layer([p, q]).numpy()
 
     # def freq_to_cents(self, freq):
     #     frequency_reference = 10
@@ -237,7 +273,7 @@ class DataGenerator(Sequence):
         frames /= (np.std(frames, axis=1)[:, np.newaxis]+1e-5)
 
 
-        frames, pitches = self.get_pitch_labels(pitch_path, self.step_size, frames, slice_ind)
+        frames, pitches = self.get_pitch_labels(pitch_path, self.step_size, mbid, frames, slice_ind)
 
         # frames = frames[slice_ind * int(len(frames) / n_cutoff):(slice_ind + 1) * int(len(frames) / n_cutoff)]
         # pitches = pitches[slice_ind * int(len(frames) / n_cutoff):(slice_ind + 1) * int(len(frames) / n_cutoff)]
@@ -250,12 +286,14 @@ class DataGenerator(Sequence):
 
         return frames, pitches
 
-    def __data_generation_raga(self, index, path, slice_ind):
+    def __data_generation_raga(self, index, path, mbid, slice_ind):
         pitch_path = self.data.loc[index, 'pitch_path']
+        # pitch_path = path.replace('audio', 'pitches')
+        # pitch_path = pitch_path[:pitch_path.index('.wav')] + '.pitch'
         hop_length = int(self.model_srate * self.step_size)
         n_frames = 1 + int((self.cutoff*self.model_srate - 1024) / hop_length)
-        pitches = self.get_pitch_labels(pitch_path, self.step_size, n_frames, slice_ind)
-        return pitches
+        pitches, cqt = self.get_pitch_labels(pitch_path, path, mbid, self.step_size, n_frames, slice_ind)
+        return pitches, cqt
         # pitches, _, _ = self.__data_generation(path, slice_ind)
         # return pitches[0]
 
@@ -355,7 +393,7 @@ class DataGenerator(Sequence):
     #     # return frames[:m], pitches[:m]
     #     return pitches
 
-    def get_pitch_labels(self, pitch_path, hop_size, n_frames, slice_ind):
+    def get_pitch_labels(self, pitch_path, audio_path, mbid, hop_size, n_frames, slice_ind):
 
         # pitch_path = pitch_path.replace('/audio/', '/features/')
         # pitch_path = self.fix_paths(pitch_path)
@@ -363,31 +401,42 @@ class DataGenerator(Sequence):
         cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
         data = pd.read_csv(pitch_path, sep='\t')
         values = data.values[:,0]
-        if slice_ind is None:
-            slice_ind = np.random.randint(0, data.shape[0] - n_frames)
         pitches = np.zeros([n_frames, 360])
         k = 0
-        if (slice_ind+1)*n_frames<data.shape[0]:
-            for i in range(slice_ind*n_frames, (slice_ind+1)*n_frames):
-                if i>=data.shape[0]:
-                    print('breaking')
-                    break
-                freq = 1e-6 + values[i]
+        if slice_ind is None:
+            slice_ind = np.random.randint(0, data.shape[0] - n_frames)
+            for i in range(slice_ind, slice_ind + n_frames):
+                freq = 1e-4 + values[i]
                 c_true = 1200 * math.log(freq / frequency_reference, 2)
                 target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
                 pitches[k] = target
                 k += 1
+            cqt = self.get_cqt(mbid, audio_path, slice_ind, False)
         else:
-            for i in range(n_frames):
-                freq = 1e-6 + values[data.shape[0]+i-n_frames]
-                c_true = 1200 * math.log(freq / frequency_reference, 2)
-                target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
-                pitches[k] = target
-                k += 1
-        # m = min(frames.shape[0], len(pitches))
-        # return frames[:m], pitches[:m]
+            if (slice_ind+1)*n_frames<data.shape[0]:
+                for i in range(slice_ind*n_frames, (slice_ind+1)*n_frames):
+                    if i>=data.shape[0]:
+                        print('breaking')
+                        break
+                    freq = 1e-6 + values[i]
+                    c_true = 1200 * math.log(freq / frequency_reference, 2)
+                    target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                    pitches[k] = target
+                    k += 1
+                cqt = self.get_cqt(mbid, audio_path, slice_ind*n_frames, False)
+            else:
+                for i in range(n_frames):
+                    freq = 1e-6 + values[data.shape[0]+i-n_frames]
+                    c_true = 1200 * math.log(freq / frequency_reference, 2)
+                    target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                    pitches[k] = target
+                    k += 1
+                cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
 
-        return pitches
+            # m = min(frames.shape[0], len(pitches))
+            # return frames[:m], pitches[:m]
+
+        return pitches, cqt
 
     def mp3_to_wav(self, mp3_path):
 
@@ -449,3 +498,40 @@ class DataGenerator(Sequence):
         # print(chromagram.shape)
         # input()
         return chromagram
+
+    def get_cqt(self, mbid, path, slice_ind_frames, last):
+        c_cqt  = self.lm_file[mbid]
+
+
+        slice_ind_audio = int((slice_ind_frames - 1) * (self.step_size * self.model_srate) + 1024)
+        slice_ind = int(((slice_ind_audio - 1024)/512)+1)
+        if not last:
+            c_cqt = c_cqt[:,slice_ind:slice_ind+self.model_srate*self.cutoff]
+        else:
+            c_cqt = c_cqt[:, -self.model_srate * self.cutoff:]
+        c_cqt = np.mean(c_cqt, axis=1, keepdims=True)
+        return tf.transpose(c_cqt)
+        # return tf.ones([1,60], np.float32)
+
+
+        sr, audio = wavfile.read(path)
+        if len(audio.shape) == 2:
+            audio = audio.mean(1)  # make mono
+        if not last:
+            audio = audio[slice_ind_audio:slice_ind_audio+self.model_srate*self.cutoff]
+        else:
+            audio = audio[-int(self.model_srate * self.cutoff):]
+        C = np.abs(librosa.cqt(audio, sr=sr, bins_per_octave=60, n_bins=60 * 7, pad_mode='wrap',
+                               fmin=librosa.note_to_hz('C1')))
+        #     librosa.display.specshow(C, sr=sr,x_axis='time', y_axis='cqt', cmap='coolwarm')
+
+        # fig, ax = plt.subplots()
+        c_cqt = librosa.amplitude_to_db(C, ref=np.max)
+        c_cqt = np.reshape(c_cqt, [7, 60, -1])
+        c_cqt = np.mean(c_cqt, axis=0, keepdims=True)
+        # c_cqt = np.mean(c_cqt, axis=1, keepdims=True)
+        # img = librosa.display.specshow(c_cqt,
+        #                                sr=self.model_srate, x_axis='time', y_axis='cqt_note', ax=ax, bins_per_octave=60)
+        # ax.set_title('Constant-Q power spectrum')
+        # fig.colorbar(img, ax=ax, format="%+2.0f dB")
+        return c_cqt
