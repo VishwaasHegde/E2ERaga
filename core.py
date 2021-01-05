@@ -181,7 +181,7 @@ def build_and_load_model(config, task='raga'):
     tonic_logits_roll = tf.roll(tonic_logits, transpose_by, axis=-1, name='tonic')
 
     rag_model = Model(inputs=[pitches_batch, random_batch, cqt_batch], outputs=[raga_logits, tonic_logits_roll])
-    # rag_model = Model(inputs=[pitches_batch, random_batch], outputs=[raga_logits])
+    # rag_model = Model(inputs=[pitches_batch, random_batch, cqt_batch], outputs=[raga_logits])
     # rag_model = Model(inputs=[pitches_batch, tonic_batch], outputs=[raga_logits])
     # rag_model = Model(inputs=[x_batch], outputs=[tonic_logits, raga_logits])
     # rag_model.compile(loss={'tonic': 'binary_crossentropy', 'raga': 'categorical_crossentropy'},
@@ -316,10 +316,9 @@ def get_peak_notes(hist):
     return diag_tf_4
 
 
-def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, drop_rate=0.2):
+def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, is_tonic, drop_rate=0.2):
     top_notes, top_notes_soft, top_notes_hard = get_top_notes(red_y)
     emb_dot = tf.reduce_mean(tf.multiply(note_emb, tf.tile(note_emb[0:1], [60, 1])), axis=1)
-    is_tonic = indices is None
     emb_dot = min_max_scale(emb_dot, is_tonic)
     # emb_dot = tf.tile(tf.expand_dims(emb_dot,0), [topk,1])[0]
     hist = tf.reduce_mean(red_y, axis=0)
@@ -336,12 +335,15 @@ def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, drop_rate=0.2):
     # cqt = min_max_scale(tf.reduce_mean(cqt,axis=1))
 
     hist_cc = tf.transpose(tf.stack([cqt_mean, hist, top_notes, top_notes_soft]))
+
     for i in range(topk):
         hist_cc_trans = tf.roll(hist_cc, -indices[i], axis=0)
         hist_cc_all.append(hist_cc_trans)
     # values = tf.cast(values, tf.float32)
     hist_cc_all = tf.stack(hist_cc_all)
 
+    if not is_tonic:
+        hist_cc_all = Dropout(0.4)(hist_cc_all)
     # if indices is None:
     #     hist_cc = tf.transpose(tf.stack([cqt_mean, hist, top_notes, top_notes_soft]))
     #
@@ -433,8 +435,8 @@ def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, drop_rate=0.2):
 
 def get_tonic_emb(red_y, cqt, note_emb, note_dim, drop_rate=0.2):
     topk=5
-    indices = tf.random.uniform(shape=(5,), minval=0, maxval=60, dtype=tf.int32)
-    hist_emb, top_notes = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, drop_rate)
+    indices = tf.random.uniform(shape=(topk,), minval=0, maxval=60, dtype=tf.int32)
+    hist_emb, top_notes = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, True, drop_rate)
     # ndms = get_ndms(red_y, top_notes, None, 1, note_emb, note_dim, drop_rate)
     # tonic_emb = combine(hist_emb, ndms, note_dim, drop_rate)
 
@@ -453,6 +455,8 @@ def get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate=0.2):
     # rs = -5
     # re = 5
     topk = 5
+    rs = topk//2
+    re = (topk//2) + 1
     # indices = tf.range(topk)
 
     # tonic_logits = Dense(1, activation='sigmoid')(tonic_emb)
@@ -460,7 +464,7 @@ def get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate=0.2):
     # peak_notes = get_peak_notes(tonic_logits[0])
 
     tonic_argmax = tf.argmax(tonic_logits[0])
-    indices = tf.range(tonic_argmax - 2, tonic_argmax + 3)
+    indices = tf.range(tonic_argmax - rs, tonic_argmax + re)
     indices = tf.math.mod(60 + indices, 60)
     values = tf.gather(tonic_logits[0], indices)
 
@@ -505,7 +509,7 @@ def get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate=0.2):
 
     # transpose_by = tf.cast(tf.argmax(tonic_logits, axis=1)[0], tf.int32)
     # red_y = tf.roll(red_y, -transpose_by, axis=1)
-    hist_emb, top_notes = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, drop_rate)
+    hist_emb, top_notes = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, False, drop_rate)
     red_y_clustered = cluster_top_notes(red_y, top_notes)
     ndms, red_y_am = get_ndms(red_y_clustered, top_notes, indices, topk, note_emb, note_dim, drop_rate)
     # rnn = get_rag_from_rnn(red_y_am, indices, topk, note_emb, note_dim, drop_rate)
@@ -626,6 +630,8 @@ def get_ndms(red_y_am, top_notes, indices, topk, note_emb, note_dim, drop_rate=0
             matmul_tmp = tf.roll(matmul, [-indices[i], -indices[i]], axis=[0, 1])
             ndms.append(matmul_tmp)
         ndms = tf.stack(ndms)
+
+    ndms = Dropout(0.3)(ndms)
         # values = tf.expand_dims(tf.expand_dims(tf.expand_dims(values,1),2),3)
         # ndms = tf.reduce_sum(tf.multiply(ndms, values), axis=0, keepdims=True)
         # ndms = ndms/tf.reduce_sum(values)
