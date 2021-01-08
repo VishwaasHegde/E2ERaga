@@ -15,7 +15,7 @@ import h5py
 
 class DataGenerator(Sequence):
     'Generates data for Keras'
-    def __init__(self, task, tradition, process, config, random=False):
+    def __init__(self, task, tradition, process, config, random=False, shuffle=True, full_length=False):
         'Initialization'
         self.batch_size = 1
         self.model_srate = config['model_srate']
@@ -31,17 +31,25 @@ class DataGenerator(Sequence):
 
         data = pd.read_csv(data_path, sep='\t')
         # data = data.iloc[15:16,:]
-        if not random:
-            data = self.get_split_data(data, self.cutoff)
+        def pitch_path(path):
+            pp = path.replace('audio', 'pitches')
+            pp = pp[:pp.index('.wav')] + '.pitch'
+            return pp
+
+        if full_length:
+            data['pitch_path'] = data['path'].apply(pitch_path)
+            data['id']= np.arange(data.shape[0])
+            data['slice'] = 0
+            random = False
         else:
-            data['pitch_path'] = data['old_path'].apply(lambda x: x+'.pitch')
+            data = self.get_split_data(data, self.cutoff)
+
         # data = data.set_index('mbid')
         self.list_IDs = data['path']
         self.data = data
-        if process=='train':
-            self.shuffle = True
-        else:
-            self.shuffle = False
+        self.shuffle = shuffle
+        self.random = random
+        self.full_length = full_length
 
         bce = tf.keras.losses.BinaryCrossentropy()
         self.bce_layer = Lambda(lambda tensors: bce(tensors[0], tensors[1]))
@@ -155,10 +163,8 @@ class DataGenerator(Sequence):
             # path = 'data\\RagaDataset\\audio\\077d538e-545a-4098-8997-76742fb26d39.wav'
             # mbid = '077d538e-545a-4098-8997-76742fb26d39.wav'
             # print(path)
-            slice_ind = None
 
-            if not self.shuffle:
-                slice_ind = self.data.loc[index, 'slice']
+            slice_ind = self.data.loc[index, 'slice']
             tonic = self.data.loc[index, 'tonic']
             y_tonic = self.freq_to_cents(tonic, 25)
             y_tonic = np.reshape(y_tonic, [-1, 6, 60])
@@ -183,6 +189,8 @@ class DataGenerator(Sequence):
             transpose_by_1 = np.expand_dims(transpose_by_1,0)
             transpose_by_2 = np.expand_dims(transpose_by_2, 0)
             shuffle = np.array([self.shuffle], dtype=np.int32)
+            # shuffle = np.array([True], dtype=np.int32)
+            # shuffle = np.array([False], dtype=np.int32)
             # print(tonic)
             # shuffle = np.array([True], dtype=np.int32)
             # bce = np.expand_dims(bce,0)
@@ -400,11 +408,18 @@ class DataGenerator(Sequence):
         frequency_reference = 10
         cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
         data = pd.read_csv(pitch_path, sep='\t')
+
+        if self.full_length:
+            slice_ind = 0
+            n_frames = data.shape[0]
+        if self.random:
+            slice_ind = None
+
         values = data.values[:,0]
         pitches = np.zeros([n_frames, 360])
         k = 0
         if slice_ind is None:
-            slice_ind = np.random.randint(0, data.shape[0] - n_frames)
+            slice_ind = np.random.randint(0, data.shape[0] - n_frames+1)
             for i in range(slice_ind, slice_ind + n_frames):
                 freq = 1e-4 + values[i]
                 c_true = 1200 * math.log(freq / frequency_reference, 2)
@@ -509,8 +524,8 @@ class DataGenerator(Sequence):
             c_cqt = c_cqt[:,slice_ind:slice_ind+self.model_srate*self.cutoff]
         else:
             c_cqt = c_cqt[:, -self.model_srate * self.cutoff:]
-        c_cqt = np.mean(c_cqt, axis=1, keepdims=True)
-        return tf.transpose(c_cqt)
+        # c_cqt = np.mean(c_cqt, axis=1, keepdims=True)
+        return np.expand_dims(np.transpose(c_cqt),0)
         # return tf.ones([1,60], np.float32)
 
 
