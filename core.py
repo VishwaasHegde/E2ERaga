@@ -6,7 +6,6 @@ import sys
 import math
 from scipy.io import wavfile
 import numpy as np
-import h5py
 from numpy.lib.stride_tricks import as_strided
 import tensorflow as tf
 from tensorflow.keras.layers import Input, Reshape, Conv2D, BatchNormalization, Softmax, Conv1D, Bidirectional
@@ -33,13 +32,10 @@ models = {
     'full': None
 }
 
-res_net = ResNet50(include_top=False, input_shape=(60, 60, 3))
 # for layer in res_net.layers[:143]:
 #     layer.trainable = False
 # for layer in res_net.layers[143:]:
 #     layer.trainable = True
-for layer in res_net.layers:
-    layer.trainable = False
 
 
 # model_2 = ResNet50(include_top=False, input_shape=(60, 60, 3))
@@ -137,7 +133,7 @@ def build_and_load_model(config, task='raga'):
     rag_model.compile(loss={'raga': cce, 'tf_op_layer_tonic': 'binary_crossentropy'},
                       optimizer='adam', metrics={'raga': 'accuracy', 'tf_op_layer_tonic': 'accuracy'},
                       loss_weights={'raga': loss_weights[0], 'tf_op_layer_tonic': loss_weights[1]})
-    rag_model.load_weights('model/hindustani_raga_model.hdf5', by_name=True)
+    # rag_model.load_weights('model/hindustani_raga_model.hdf5', by_name=True)
 
     # rag_model.compile(loss={'raga': 'categorical_crossentropy'},
     #                   optimizer='adam', metrics={'raga': 'accuracy'},
@@ -293,7 +289,7 @@ def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, is_tonic, drop_r
     if not is_tonic:
         hist_cc_all = Dropout(0.4)(hist_cc_all)
     else:
-        hist_cc_all = Dropout(0.3)(hist_cc_all)
+        hist_cc_all = Dropout(0.4)(hist_cc_all)
 
     # res_net = ResNet50(include_top=False, input_shape=(60, 60, 3))
 
@@ -340,7 +336,7 @@ def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, is_tonic, drop_r
     z = Dropout(drop_rate)(z)
     z = Flatten()(z)
     z = Dense(2 * note_dim, activation='relu')(z)
-    z = Dropout(drop_rate)(z)
+    # z = Dropout(drop_rate)(z)
     return z
 
 
@@ -348,8 +344,9 @@ def get_tonic_emb(red_y, cqt, note_emb, note_dim, drop_rate=0.2):
     topk=5
     indices = tf.random.uniform(shape=(topk,), minval=0, maxval=60, dtype=tf.int32)
     hist_emb = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, True, drop_rate)
+    ndms = get_ndms(red_y, indices, topk, note_emb, note_dim, False, drop_rate)
     # ndms = get_ndms(red_y, top_notes, None, 1, note_emb, note_dim, drop_rate)
-    # tonic_emb = combine(hist_emb, ndms, note_dim, drop_rate)
+    tonic_emb = combine(hist_emb, ndms, topk, note_dim, drop_rate)
 
     tonic_emb = hist_emb
 
@@ -451,7 +448,7 @@ def get_ndms(red_y, indices, topk, note_emb, note_dim, is_tonic, drop_rate=0.6):
             ndms.append(matmul_tmp)
         ndms = tf.stack(ndms)
 
-    ndms = Dropout(0.3)(ndms)
+    ndms = Dropout(0.4)(ndms)
 
     # matmul_flat = tf.reshape(tf.squeeze(ndms,3), [topk,60*60])
     # z = ffnn(matmul_flat, [2*note_dim, 2*note_dim, 2*note_dim], drop_rate=drop_rate)
@@ -499,7 +496,7 @@ def get_ndms(red_y, indices, topk, note_emb, note_dim, is_tonic, drop_rate=0.6):
     z = MaxPool2D(pool_size=(2, 2), strides=None, padding='valid')(z)
     z = Flatten()(z)
     z = Dense(2 * note_dim, activation='relu')(z)
-    z = Dropout(drop_rate)(z)
+    # z = Dropout(drop_rate)(z)
     return z
 
 def cluster_top_notes(red_y, top_notes):
@@ -721,6 +718,7 @@ def train(task, tradition):
         config = pyhocon.ConfigFactory.parse_file("experiments.conf")[task]
         training_generator = DataGenerator(task, tradition, 'train', config, random=True, shuffle=True, full_length=False)
         validation_generator = DataGenerator(task, tradition, 'validate', config, random=False, shuffle=False, full_length=False)
+        test_generator = DataGenerator(task, tradition, 'test', config, random=False, shuffle=False, full_length=True)
         model = build_and_load_model(config, task)
         # model.load_weights(tonic_model_path, by_name=True)
         # model.load_weights('model/model-full.h5', by_name=True)
@@ -728,11 +726,14 @@ def train(task, tradition):
         # model.fit(x=training_generator,
         #                     validation_data=validation_generator, verbose=2, epochs=15, shuffle=True, batch_size=1)
 
-        checkpoint = ModelCheckpoint(raga_model_path, monitor='loss', verbose=1,
+        checkpoint = ModelCheckpoint(raga_model_path, monitor='val_loss', verbose=1,
                                      save_best_only=True, mode='auto', period=1)
         # early_stopping_callback = EarlyStopping(monitor="val_loss", patience=5, mode="auto", restore_best_weights=True, min_delta=0.0000001)
+        # model.fit_generator(generator=training_generator,
+        #                     validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
+        #                     callbacks=[checkpoint])
         model.fit_generator(generator=training_generator,
-                            validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
+                            validation_data=test_generator, verbose=1, epochs=50, shuffle=True,
                             callbacks=[checkpoint])
 
 
@@ -858,46 +859,6 @@ def test_pitch(task, tradition):
             pitch_file.close()
             break
         break
-
-
-def cache_cqt(task, tradition):
-    config = pyhocon.ConfigFactory.parse_file("experiments.conf")[task]
-
-    with h5py.File('data/RagaDataset/Hindustani/cqt_cache.hdf5', "w") as f:
-        for t in ['train', 'validate', 'test']:
-            data_path = config[tradition + '_' + t]
-            data = pd.read_csv(data_path, sep='\t')
-            data = data.reset_index()
-            k = 0
-            while k < data.shape[0]:
-                path = data.loc[k, 'path']
-                mbid = data.loc[k, 'mbid']
-                cqt = get_cqt(path)
-                f.create_dataset(mbid, data=cqt)
-                print(mbid, k)
-                k += 1
-
-
-def get_cqt(path):
-    # return tf.ones([1,60], np.float32)
-
-    sr, audio = wavfile.read(path)
-    if len(audio.shape) == 2:
-        audio = audio.mean(1)  # make mono
-    C = np.abs(librosa.cqt(audio, sr=sr, bins_per_octave=60, n_bins=60 * 7, pad_mode='wrap',
-                           fmin=librosa.note_to_hz('C1')))
-    #     librosa.display.specshow(C, sr=sr,x_axis='time', y_axis='cqt', cmap='coolwarm')
-
-    # fig, ax = plt.subplots()
-    c_cqt = librosa.amplitude_to_db(C, ref=np.max)
-    c_cqt = np.reshape(c_cqt, [7, 60, -1])
-    c_cqt = np.mean(c_cqt, axis=0)
-    # c_cqt = np.mean(c_cqt, axis=1, keepdims=True)
-    # img = librosa.display.specshow(c_cqt,
-    #                                sr=self.model_srate, x_axis='time', y_axis='cqt_note', ax=ax, bins_per_octave=60)
-    # ax.set_title('Constant-Q power spectrum')
-    # fig.colorbar(img, ax=ax, format="%+2.0f dB")
-    return c_cqt
 
 
 def __data_generation_pitch(path, slice_ind, model_srate, step_size, cuttoff):
