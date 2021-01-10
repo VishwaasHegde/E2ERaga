@@ -9,3 +9,4 @@ scikit-learn>=0.23.2
 pydub
 matplotlib>=3.3.2
 tqdm
+h5py
