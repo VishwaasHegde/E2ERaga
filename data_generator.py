@@ -8,7 +8,6 @@ import pandas as pd
 import math
 from pydub import AudioSegment
 from resampy import resample
-import matplotlib.pyplot as plt
 from tensorflow.keras.layers import Lambda
 import tensorflow as tf
 import h5py
