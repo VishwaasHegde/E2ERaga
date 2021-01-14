@@ -147,7 +147,7 @@ def build_and_load_model(config, task='raga'):
     #                   optimizer='adam', metrics={'raga': 'accuracy'},
     #                   loss_weights={'raga': loss_weights[0]})
 
-    rag_model.summary()
+    # rag_model.summary()
     # rag_model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
     return rag_model
 
@@ -822,7 +822,10 @@ def test_pitch(task, tradition):
             pitch_path = path[:path.index('.wav')] + '.pitch'
             pitch_path = pitch_path.replace('audio', 'pitches')
 
-            pitch_file = open(pitch_path, "w")
+            if os.path.exists(pitch_path):
+                k+=1
+                continue
+
             # if os.path.exists(pitch_path):
             #     pitch_file = open(pitch_path, "a")
             # else:
@@ -851,34 +854,35 @@ def test_pitch(task, tradition):
                     break
                 # frequency = list(map(str, frequency))
             pitches = list(map(str, pitches))
+            pitch_file = open(pitch_path, "w")
             pitch_file.writelines('\n'.join(pitches))
             pitch_file.close()
-            break
-        break
 
-def predict_run_time(tradition):
-    config = pyhocon.ConfigFactory.parse_file("experiments.conf")['pitch']
-    audio = recorder.record(30)
-    model = build_and_load_model(config, 'pitch')
-    model.load_weights('model/model-full.h5', by_name=True)
-    frames = audio_2_frames(audio, config)
-    p = model.predict(np.array([frames]))
-    cents = to_local_average_cents(p)
-    frequencies = 10 * 2 ** (cents / 1200)
-    pitches = [freq_to_cents(freq) for freq in frequencies]
-    # pitches = np.reshape(pitches, [-1, 6, 60])
-    pitches = np.expand_dims(pitches,0)
-    cqt = get_cqt(audio)
-    config = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
-    model = build_and_load_model(config, 'raga')
-    model.load_weights('model/{}_raga_model.hdf5'.format(tradition), by_name=True)
-    p = model.predict([pitches, np.array([False]), cqt])
-    print('raga: {}'.format(np.argmax(p[0])))
+def predict_run_time(tradition, seconds=60):
+    pitch_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['pitch']
+    pitch_model = build_and_load_model(pitch_config, 'pitch')
+    pitch_model.load_weights('model/model-full.h5', by_name=True)
 
-    cents = to_local_average_cents(p[1])
-    frequency = 10 * 2 ** (cents / 1200)
+    raga_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
+    raga_model = build_and_load_model(raga_config, 'raga')
+    raga_model.load_weights('model/{}_raga_model.hdf5'.format(tradition), by_name=True)
 
-    print('tonic: {}'.format(frequency))
+    while True:
+        audio = recorder.record(seconds)
+        if audio is None:
+            return
+        frames = audio_2_frames(audio, pitch_config)
+        p = pitch_model.predict(np.array([frames]))
+        cents = to_local_average_cents(p)
+        frequencies = 10 * 2 ** (cents / 1200)
+        pitches = [freq_to_cents(freq) for freq in frequencies]
+        pitches = np.expand_dims(pitches,0)
+        cqt = get_cqt(audio)
+        p = raga_model.predict([pitches, np.array([False]), cqt])
+        cents = to_local_average_cents(p[1])
+        frequency = 10 * 2 ** (cents / 1200)
+        print('raga: {}'.format(np.argmax(p[0])))
+        print('tonic: {}'.format(frequency[0]))
 
 
 def audio_2_frames(audio, config):
