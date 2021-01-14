@@ -8,6 +8,10 @@ Install the requirements by running `pip install -r requirements.txt`
 1. Models can be downloaded from 
 2. Place both the models in E2ERaga\model folder
 
+## Data
+1. I dont have the permisssion to upload the datasets, the datasets has to be obtained by request from here: https://compmusic.upf.edu/node/328
+2. Or contact me directly: vishwaas (dot) universe (at) gmail (dot) com
+
 ## Run Time Input
 E2ERaga supports audio samples which can be provided at runtime
 
