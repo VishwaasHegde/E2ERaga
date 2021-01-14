@@ -22,6 +22,8 @@ import pandas as pd
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 import recorder
 from scipy import stats
+from pydub import AudioSegment
+from resampy import resample
 
 # store as a global variable, since we only support a few models for now
 from data_generator import DataGenerator
@@ -719,7 +721,7 @@ def train(task, tradition):
         #                     validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
         #                     callbacks=[checkpoint])
         model.fit_generator(generator=training_generator,
-                            validation_data=test_generator, verbose=1, epochs=50, shuffle=True,
+                            validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
                             callbacks=[checkpoint])
 
 
@@ -871,18 +873,56 @@ def predict_run_time(tradition, seconds=60):
         audio = recorder.record(seconds)
         if audio is None:
             return
-        frames = audio_2_frames(audio, pitch_config)
-        p = pitch_model.predict(np.array([frames]))
-        cents = to_local_average_cents(p)
-        frequencies = 10 * 2 ** (cents / 1200)
-        pitches = [freq_to_cents(freq) for freq in frequencies]
-        pitches = np.expand_dims(pitches,0)
-        cqt = get_cqt(audio)
-        p = raga_model.predict([pitches, np.array([False]), cqt])
-        cents = to_local_average_cents(p[1])
-        frequency = 10 * 2 ** (cents / 1200)
-        print('raga: {}'.format(np.argmax(p[0])))
-        print('tonic: {}'.format(frequency[0]))
+        get_raga_tonic_prediction(audio, pitch_config, pitch_model, raga_model)
+
+
+def get_raga_tonic_prediction(audio, pitch_config, pitch_model, raga_model):
+    frames = audio_2_frames(audio, pitch_config)
+    p = pitch_model.predict(np.array([frames]))
+    cents = to_local_average_cents(p)
+    frequencies = 10 * 2 ** (cents / 1200)
+    pitches = [freq_to_cents(freq) for freq in frequencies]
+    pitches = np.expand_dims(pitches, 0)
+    cqt = get_cqt(audio)
+    p = raga_model.predict([pitches, np.array([False]), cqt])
+    cents = to_local_average_cents(p[1])
+    frequency = 10 * 2 ** (cents / 1200)
+    print('raga: {}'.format(np.argmax(p[0])))
+    print('tonic: {}'.format(frequency[0]))
+
+
+def predict_run_time_file(file_path, tradition, filetype='wav'):
+
+    pitch_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['pitch']
+    pitch_model = build_and_load_model(pitch_config, 'pitch')
+    pitch_model.load_weights('model/model-full.h5', by_name=True)
+
+    raga_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
+    raga_model = build_and_load_model(raga_config, 'raga')
+    raga_model.load_weights('model/{}_raga_model.hdf5'.format(tradition), by_name=True)
+
+    if filetype == 'mp3':
+        audio = mp3_to_wav(file_path)
+    else:
+        sr, audio = wavfile.read(file_path)
+        if len(audio.shape) == 2:
+            audio = audio.mean(1)
+
+    get_raga_tonic_prediction(audio, pitch_config, pitch_model, raga_model)
+
+
+def mp3_to_wav(mp3_path):
+
+    a = AudioSegment.from_mp3(mp3_path)
+    y = np.array(a.get_array_of_samples())
+
+    if a.channels == 2:
+        y = y.reshape((-1, 2))
+        y = y.mean(1)
+    y = np.float32(y) / 2 ** 15
+
+    y = resample(y, a.frame_rate, 16000)
+    return y
 
 
 def audio_2_frames(audio, config):
