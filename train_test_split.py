@@ -12,6 +12,8 @@ from shutil import copyfile
 from tqdm import tqdm
 model_srate = 16000
 import pydub
+import argparse
+
 
 def create_tonic_test_train_split(config):
     data_path = config['data_path']
@@ -300,8 +302,23 @@ def move_files(path, mbid):
     # os.rename(path, mbid)
     copyfile(path, mbid)
 
-if __name__ == '__main__':
-    # config_raga = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
-    # create_raga_test_train_split(config_raga)
+def tonic_train_test_split():
     config_tonic = pyhocon.ConfigFactory.parse_file("experiments.conf")['tonic']
     create_tonic_test_train_split(config_tonic)
+
+def raga_train_test_split():
+    config_raga = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
+    create_raga_test_train_split(config_raga)
+
+if __name__ == '__main__':
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument('--task', default=False, help='prepare train test split for tonic/raga')
+
+    p_args = arg_parser.parse_args()
+
+    if p_args.task == 'tonic':
+        tonic_train_test_split()
+    elif p_args.task == 'tonic':
+        raga_train_test_split()
+    else:
+        raise ValueError('task {} is not defined'.format(p_args.task))
