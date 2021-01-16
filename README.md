@@ -5,8 +5,8 @@ This repository contains code for an end to end model for raga and tonic identif
 Install the requirements by running `pip install -r requirements.txt`
 
 ## Model
-1. Models can be downloaded from 
-2. Place both the models in E2ERaga\model folder
+1. Create an empty folder called `model` and place it in E2ERaga folder
+2. Download the models (model-full.h5 and hindustani_raga_model.hdf5) from [here](https://drive.google.com/drive/u/0/folders/1n5u8jHsFUET2krAj1JDAT1dwjMLKA6mT) and place them in models folder 
 
 ## Data
 1. I dont have the permisssion to upload the datasets, the datasets has to be obtained by request from here: https://compmusic.upf.edu/node/328
