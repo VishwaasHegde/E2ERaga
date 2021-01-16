@@ -1,0 +1,17 @@
+data/RagaDataset/audio/
+data/RagaDataset/Carnatic/_info_/
+data/RagaDataset/Carnatic/audio/
+data/RagaDataset/Carnatic/features/
+data/RagaDataset/Hindustani/_info_/
+data/RagaDataset/Hindustani/audio/
+data/RagaDataset/Hindustani/features/
+data/RagaDataset_Orig/
+data/saraga_1.0/
+data/TonicDataset/CM/
+data/TonicDataset/datasets/
+data/TonicDataset/IISc/
+data/TonicDataset/IITM/
+data/TonicDataset_Orig/
+model/
+venv/
+__pycache__/
