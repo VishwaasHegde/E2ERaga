@@ -13,7 +13,7 @@ Install the requirements by running `pip install -r requirements.txt`
 2. Or contact me directly: vishwaas (dot) universe (at) gmail (dot) com
 
 ## Run Time Input
-E2ERaga supports audio samples which can be provided at runtime
+E2ERaga supports audio samples which can be recorded at runtime
 
 Steps to run:
 1. Run the command `python test_sample.py --runtime=True --tradition=hindustani --duration=60` 
@@ -21,6 +21,15 @@ Steps to run:
 3. Once you run this command, there will be a prompt - `Press 1 to start recording or press 0 to exit:`
 4. Enter accordingly and start recording for `duration` duration
 5. After this the raga label and the tonic frequency is outputted
+
+## File input
+E2ERaga supports recorded audio samples which can be provided at runtime
+
+Steps to run:
+1. Run the command `python test_sample.py --runtime_file=<audio_file_path> --tradition=<hindustani/carnatic> --file_type=wav`
+   Example: `python test_sample.py --runtime_file=data/sample_data/Ahira_bhairav_27.wav --tradition=hindustani --file_type=wav`
+2. The model supports wav and mp3 file (--filetype defaults to wav if not provided), with mp3 there will be a delay in converting into wav format internally
+3. After this the raga label and the tonic frequency is outputted
 
 
 
