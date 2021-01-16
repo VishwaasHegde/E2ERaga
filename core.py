@@ -15,7 +15,6 @@ from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.models import Model
 import librosa
 import librosa.display
-from encoder_2 import Encoder
 import pyhocon
 import os
 import pandas as pd

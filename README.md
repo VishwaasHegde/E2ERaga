@@ -22,8 +22,6 @@ Steps to run:
 4. Enter accordingly and start recording for `duration` duration
 5. After this the raga label and the tonic frequency is outputted
 
-Update
-
 
 
 
