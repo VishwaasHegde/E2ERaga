@@ -27,10 +27,13 @@ E2ERaga supports recorded audio samples which can be provided at runtime
 
 Steps to run:
 1. Run the command `python test_sample.py --runtime_file=<audio_file_path> --tradition=<hindustani/carnatic> --file_type=wav`
+   
    Example: `python test_sample.py --runtime_file=data/sample_data/Ahira_bhairav_27.wav --tradition=hindustani --file_type=wav`
-2. The model supports wav and mp3 file (--filetype defaults to wav if not provided), with mp3 there will be a delay in converting into wav format internally
-3. After this the raga label and the tonic frequency is outputted
+3. The model supports wav and mp3 file (--filetype defaults to wav if not provided), with mp3 there will be a delay in converting into wav format internally
+4. After this the raga label and the tonic frequency is outputted
 
-
+Acknowledgments:
+1. The model uses [CREPE](https://github.com/marl/crepe) to find the pitches for the audio, I would like to thank [Jong Wook](https://github.com/jongwook) for clarifiying my questions
+2. Also thank [CompMusic](https://compmusic.upf.edu/node/328) and Sankalp Gulati for providing me the datasets
 
 
