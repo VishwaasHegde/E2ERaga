@@ -2,6 +2,8 @@
 This repository contains code for an end to end model for raga and tonic identification on audio samples
 
 # Getting Started
+Requires `python==3.6.9`
+Download and install [Anaconda](https://www.anaconda.com/products/individual) for easier package management
 Install the requirements by running `pip install -r requirements.txt`
 
 ## Model
