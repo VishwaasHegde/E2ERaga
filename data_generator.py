@@ -30,16 +30,14 @@ class DataGenerator(Sequence):
 
         data = pd.read_csv(data_path, sep='\t')
         # data = data.iloc[15:16,:]
-        def pitch_path(path):
-            pp = path.replace('audio', 'pitches')
-            pp = pp[:pp.index('.wav')] + '.pitch'
-            return pp
 
         if full_length:
-            data['pitch_path'] = data['path'].apply(pitch_path)
+            if process=='train' or process=='test':
+                data = pd.concat([data, data, data, data, data], axis=0)
+                data = data.reset_index(drop=True)
+            data['pitch_path'] = data['path'].apply(self.pitch_path)
             data['id']= np.arange(data.shape[0])
             data['slice'] = 0
-            random = False
         else:
             data = self.get_split_data(data, self.cutoff)
 
@@ -53,7 +51,7 @@ class DataGenerator(Sequence):
         bce = tf.keras.losses.BinaryCrossentropy()
         self.bce_layer = Lambda(lambda tensors: bce(tensors[0], tensors[1]))
 
-        self.lm_file = h5py.File('data/RagaDataset/Hindustani/cqt_cache.hdf5', "r")
+        self.lm_file = h5py.File(config[tradition+'_cqt_cache'], "r")
 
         # self.indexes = np.arange(len(self.list_IDs))
         self.on_epoch_end()
@@ -78,30 +76,31 @@ class DataGenerator(Sequence):
     #     df = df.set_index('id')
     #     return df
 
+    def pitch_path(self, path):
+        pp = path.replace('audio', 'pitches')
+        pp = pp[:pp.index('.wav')] + '.pitch'
+        return pp
+
     def get_split_data(self, data, cutoff):
 
         all_data = []
         id = 0
         for path, old_path, file_len, tonic, mbid, label in data[['path', 'old_path', 'len', 'tonic_fine', 'mbid', 'labels']].values:
-            if label<30:
-                n_cutoff = int(file_len/cutoff)
-                # n_cutoff = 1000
-                # cutoffs = np.random.randint(0,n_cutoff-1,1000)
-                for i in range(n_cutoff):
-                    json_data = {}
-                    json_data['id'] = id
-                    json_data['path'] = path
-                    # json_data['pitch_path'] = old_path+'.pitch'
-                    pitch_path = path.replace('audio', 'pitches')
-                    pitch_path = pitch_path[:pitch_path.index('.wav')]+'.pitch'
-                    json_data['pitch_path'] = pitch_path
-                    json_data['slice'] = i
-                    json_data['tonic'] = tonic
-                    json_data['mbid'] = mbid
-                    json_data['labels'] = label
-                    json_data['n_cutoff'] = 1000
-                    all_data.append(json_data)
-                    id+=1
+            n_cutoff = int(file_len/cutoff)
+            # n_cutoff = 1000
+            # cutoffs = np.random.randint(0,n_cutoff-1,1000)
+            for i in range(n_cutoff):
+                json_data = {}
+                json_data['id'] = id
+                json_data['path'] = path
+                pitch_path = self.pitch_path(path)
+                json_data['pitch_path'] = pitch_path
+                json_data['slice'] = i
+                json_data['tonic'] = tonic
+                json_data['mbid'] = mbid
+                json_data['labels'] = label
+                all_data.append(json_data)
+                id+=1
         df = pd.DataFrame(all_data)
         df = df.set_index('id')
         return df
@@ -159,56 +158,19 @@ class DataGenerator(Sequence):
             # index = 15
             path = self.data.loc[index, 'path']
             mbid = self.data.loc[index, 'mbid']
-            # path = 'data\\RagaDataset\\audio\\077d538e-545a-4098-8997-76742fb26d39.wav'
-            # mbid = '077d538e-545a-4098-8997-76742fb26d39.wav'
-            # print(path)
-
             slice_ind = self.data.loc[index, 'slice']
             tonic = self.data.loc[index, 'tonic']
             y_tonic = self.freq_to_cents(tonic, 25)
             y_tonic = np.reshape(y_tonic, [-1, 6, 60])
             y_tonic = np.sum(y_tonic, axis=1)
-            # y_tonic = np.array([y_tonic])
             pitches, cqt = self.__data_generation_raga(index, path, mbid, slice_ind)
-            # X, pitches = self.__data_generation_pitch(index, path, slice_ind)
-            # X = [X]
             pitches = np.array([pitches])
-            # X = self.__data_generation(path, slice_ind)
             label = self.data.loc[index, 'labels']
-            # print('raga label: {}, index:{}'.format(label,index))
-            # print('label: ', label)
             y_raga = to_categorical(label, num_classes=self.n_labels)
             y_raga = np.array([y_raga])
-            # return {'x_input':X[0], 'chroma_input':X[1], 'energy_input':X[2], 'tonic_input': y_tonic} , {'tf_op_layer_tonic':y_tonic, 'raga':y_raga}
-            # return {'x_input': X[0], 'chroma_input': X[1], 'energy_input': X[2], 'tonic_input': y_tonic}, {'raga': y_raga}
-            # return {'pitches_input':pitches, 'tonic_input': y_tonic}, {'raga': y_raga}
-            transpose_by_1 = np.random.randint(20, dtype=np.int32)
-            transpose_by_2 = np.random.randint(20, dtype=np.int32)
-            # bce = self.get_bce_tonic(y_tonic, transpose_by_1, transpose_by_2)
-            transpose_by_1 = np.expand_dims(transpose_by_1,0)
-            transpose_by_2 = np.expand_dims(transpose_by_2, 0)
             shuffle = np.array([self.shuffle], dtype=np.int32)
-            # shuffle = np.array([True], dtype=np.int32)
-            # shuffle = np.array([False], dtype=np.int32)
-            # print(tonic)
-            # shuffle = np.array([True], dtype=np.int32)
-            # bce = np.expand_dims(bce,0)
-            # transpose_by = 0
-            # y_tonic = np.roll(y_tonic, -transpose_by, axis=1)
-            # y_tonic = self.freq_to_cents(31.7)
-            # transpose_by = np.array([transpose_by])
-            # return {'pitches_input': pitches, 'transpose_by_1_input':np.array([transpose_by_1]), 'transpose_by_2_input':np.array([transpose_by_2])}, {'raga': y_raga, 'tf_op_layer_ExpandDims_20': np.expand_dims(bce,0), 'tf_op_layer_Roll_410':y_tonic, 'tf_op_layer_Roll_411':y_tonic}
-            # return {'pitches_input': pitches, 'transpose_by_1_input': transpose_by_1, 'transpose_by_2_input': transpose_by_2}, {'tf_op_layer_ExpandDims_20': bce, 'raga': y_raga, 'raga_1': y_raga}
-            # return {'pitches_input': pitches, 'transpose_by_1_input': transpose_by_1, 'transpose_by_2_input': transpose_by_2}, {'tf_op_layer_ExpandDims_20': bce, 'tf_op_layer_ExpandDims_21': np.array([0])}
-
-            # return {'pitches_input': pitches, 'transpose_by_1_input': transpose_by_1,
-            #         'transpose_by_2_input': transpose_by_2}, {'tf_op_layer_ExpandDims_20': bce}
-            return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input':cqt}, {'raga': y_raga, 'tf_op_layer_tonic': y_tonic}
-            # return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt}, {'raga': y_raga}
-            # return {'pitches_input': pitches, 'random_input': np.array([self.shuffle], dtype=np.int32)}, {'raga': y_raga, 'tf_op_layer_tonic': y_tonic}
-            # return {'pitches_input': pitches, 'tonic_input':y_tonic}, {'raga': y_raga}
-            # return {'pitches_input': pitches}, {'raga': y_raga, 'tf_op_layer_ExpandDims_18': np.array([0.0]), 'tf_op_layer_ExpandDims_19': np.array([-20.0])}
-            # return X, y_tonic, y_raga
+            return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt}, {'raga': y_raga,
+                                                                                           'tf_op_layer_tonic': y_tonic}
         else:
             raise ValueError('Unknown task')
 
@@ -409,8 +371,8 @@ class DataGenerator(Sequence):
         data = pd.read_csv(pitch_path, sep='\t')
 
         if self.full_length:
-            slice_ind = 0
-            n_frames = data.shape[0]
+            slice_ind = None
+            # n_frames = data.shape[0]
         if self.random:
             slice_ind = None
 
@@ -418,6 +380,10 @@ class DataGenerator(Sequence):
         pitches = np.zeros([n_frames, 360])
         k = 0
         if slice_ind is None:
+            if n_frames>=data.shape[0]:
+                n_frames = data.shape[0]
+                values = data.values[:, 0]
+                pitches = np.zeros([n_frames, 360])
             slice_ind = np.random.randint(0, data.shape[0] - n_frames+1)
             for i in range(slice_ind, slice_ind + n_frames):
                 freq = 1e-4 + values[i]
@@ -519,10 +485,11 @@ class DataGenerator(Sequence):
 
         slice_ind_audio = int((slice_ind_frames - 1) * (self.step_size * self.model_srate) + 1024)
         slice_ind = int(((slice_ind_audio - 1024)/512)+1)
+        n_frames = int(((self.model_srate*self.cutoff - 1024)/512)+1)
         if not last:
-            c_cqt = c_cqt[:,slice_ind:slice_ind+self.model_srate*self.cutoff]
+            c_cqt = c_cqt[:,slice_ind:slice_ind+n_frames]
         else:
-            c_cqt = c_cqt[:, -self.model_srate * self.cutoff:]
+            c_cqt = c_cqt[:, -n_frames:]
         # c_cqt = np.mean(c_cqt, axis=1, keepdims=True)
         return np.expand_dims(np.transpose(c_cqt),0)
         # return tf.ones([1,60], np.float32)
