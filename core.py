@@ -122,9 +122,10 @@ def build_and_load_model(config, task='raga'):
     # red_y_random = apply_note_random(red_y)
     # red_y = random*red_y_random + (1-random)*red_y
     # Tonic
-    tonic_logits = get_tonic_emb(red_y, cqt, note_emb, note_dim, drop_rate_tonic)
+    histograms = get_histograms(red_y, cqt)
+    tonic_logits = get_tonic_emb(red_y, cqt, histograms, note_emb, note_dim, drop_rate_tonic)
 
-    raga_emb = get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate_raga)
+    raga_emb = get_raga_emb(red_y, cqt, histograms, tonic_logits, note_emb, note_dim, random, drop_rate_raga)
     # raga_logits = get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate_raga)
     raga_logits = Dense(n_labels, activation='softmax', name='raga')(raga_emb)
 
@@ -292,40 +293,13 @@ def get_peak_notes(hist):
     return diag_tf_4
 
 
-def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, is_tonic, drop_rate=0.2):
-    # top_notes, top_notes_soft, top_notes_hard = get_top_notes(red_y)
-    emb_dot = tf.reduce_mean(tf.multiply(note_emb, tf.tile(note_emb[0:1], [60, 1])), axis=1)
-    emb_dot = min_max_scale(emb_dot, is_tonic)
-    # emb_dot = tf.tile(tf.expand_dims(emb_dot,0), [topk,1])[0]
+def get_hist_emb(histograms, note_dim, indices, topk, is_tonic, drop_rate=0.2):
+    hist_cc = [tf.cast(standardize(h), tf.float32) for h in histograms]
 
-    red_y_hist = min_max_scale(tf.reduce_mean(red_y, axis=0), is_tonic)
-    red_y_std = tf.math.reduce_std(red_y, axis=0)
-
-    c_note = freq_to_cents(31.7 * 2)
-    c_note = np.reshape(c_note, [6, 60])
-    c_note = np.sum(c_note, axis=0)
-    cqt_argmax = tf.argmax(cqt, axis=1)
-    red_cqt = tf.keras.layers.Lambda(
-        lambda x: tf.map_fn(lambda a: tf.roll(tf.constant(c_note), a, axis=-1), x, tf.float64))(cqt_argmax)
-    # red_cqt = tf.one_hot(cqt_argmax, 60)
-
-    if is_tonic:
-        cqt_hist = tf.reduce_mean(cqt, axis=0)
-        cqt_std = tf.math.reduce_std(cqt, axis=0)
-        # cqt_hist = AvgPool1D(pool_size=3, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(cqt_hist, 0), 2))[0, :, 0]
-        # cqt_std = AvgPool1D(pool_size=3, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(cqt_std, 0), 2))[0, :, 0]
-        hist_cc = [red_y_hist, red_y_std, cqt_hist, cqt_std]
-    else:
-        # cqt_hist = tf.reduce_mean(red_cqt, axis=0)
-        # cqt_std = tf.math.reduce_std(red_cqt, axis=0)
-        cqt_hist = tf.reduce_mean(cqt, axis=0)
-        cqt_std = tf.math.reduce_std(cqt, axis=0)
-        # cqt_hist = tf.cast(cqt_hist, tf.float32) + tf.reduce_mean(cqt, axis=0)
-        # cqt_std = tf.cast(cqt_std, tf.float32)+tf.math.reduce_std(cqt, axis=0)
-        # top_notes_soft = min_max_scale(top_notes_all_soft[0], is_tonic)
-        hist_cc = [red_y_hist, red_y_std, cqt_hist, cqt_std]
-
-    hist_cc = [tf.cast(min_max_scale(h, is_tonic), tf.float32) for h in hist_cc]
+    # for idx, h in enumerate(hist_cc):
+    #     if idx >= 2:
+    #         h = AvgPool1D(pool_size=3, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(h, 0), 2))[0, :, 0]
+    #     hist_cc[idx] = h
 
     hist_cc = tf.transpose(tf.stack(hist_cc))
     hist_cc_all = []
@@ -334,49 +308,55 @@ def get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, is_tonic, drop_r
         hist_cc_all.append(hist_cc_trans)
     hist_cc_all = tf.stack(hist_cc_all)
 
-    if not is_tonic:
-        hist_cc_all = Dropout(0.5)(hist_cc_all)
-    else:
-        hist_cc_all = Dropout(0.1)(hist_cc_all)
-
-
-    z = Conv1D(filters=64, kernel_size=5, strides=1, padding='same', activation='relu')(hist_cc_all)
-    z = Conv1D(filters=64, kernel_size=5, strides=1, padding='same', activation='relu')(z)
-    z = BatchNormalization()(z)
-    z = MaxPool1D(pool_size=2)(z)
-    z = Dropout(drop_rate)(z)
-    z = Conv1D(filters=128, kernel_size=3, strides=1, padding='same', activation='relu')(z)
-    z = Conv1D(filters=128, kernel_size=3, strides=1, padding='same', activation='relu')(z)
-    z = BatchNormalization()(z)
-    z = MaxPool1D(pool_size=2)(z)
-    z = Dropout(drop_rate)(z)
-    z = Conv1D(filters=256, kernel_size=3, strides=1, padding='same', activation='relu')(z)
-    z = Conv1D(filters=256, kernel_size=3, strides=1, padding='same', activation='relu')(z)
-    z = BatchNormalization()(z)
-    z = MaxPool1D(pool_size=2)(z)
-    z = Dropout(drop_rate)(z)
-    z = Flatten()(z)
-    # z = Dense(2 * note_dim, activation='relu')(z)
     if is_tonic:
-        z = Dense(2 * note_dim, activation='relu')(z)
+        hist_cc_all = Dropout(0.3)(hist_cc_all)
     else:
-        z = Dense(3 * note_dim, activation='relu')(z)
-    z = Dropout(drop_rate)(z)
-    return z
+        hist_cc_all = Dropout(0.2)(hist_cc_all)
 
 
-def get_tonic_emb(red_y, cqt, note_emb, note_dim, drop_rate=0.2):
+    if True:
+        z = Conv1D(filters=64, kernel_size=5, strides=1, padding='same', activation='relu')(hist_cc_all)
+        z = Conv1D(filters=64, kernel_size=5, strides=1, padding='same', activation='relu')(z)
+        z = BatchNormalization()(z)
+        z = MaxPool1D(pool_size=2)(z)
+        z = Dropout(drop_rate)(z)
+        z = Conv1D(filters=128, kernel_size=3, strides=1, padding='same', activation='relu')(z)
+        z = Conv1D(filters=128, kernel_size=3, strides=1, padding='same', activation='relu')(z)
+        z = BatchNormalization()(z)
+        z = MaxPool1D(pool_size=2)(z)
+        z = Dropout(drop_rate)(z)
+        z = Conv1D(filters=256, kernel_size=3, strides=1, padding='same', activation='relu')(z)
+        z = Conv1D(filters=256, kernel_size=3, strides=1, padding='same', activation='relu')(z)
+        z = BatchNormalization()(z)
+        z = MaxPool1D(pool_size=2)(z)
+        z = Dropout(drop_rate)(z)
+        z = Flatten()(z)
+        # z = Dense(2 * note_dim, activation='relu')(z)
+        if is_tonic:
+            z = Dense(2 * note_dim, activation='relu')(z)
+        else:
+            z = Dense(2 * note_dim, activation='relu')(z)
+        # z = Dropout(drop_rate)(z)
+        return z
+    else:
+        # pass
+        hist_cc_all = tf.expand_dims(hist_cc_all,2)
+        hist_cc_all = tf.tile(hist_cc_all, [1,1,60,1])
+        z = get_ndms(hist_cc_all,note_dim, drop_rate)
+        return z
+
+
+def get_tonic_emb(red_y, cqt, histograms, note_emb, note_dim, drop_rate=0.2):
     topk=9
 
     indices = tf.random.uniform(shape=(topk,), minval=0, maxval=60, dtype=tf.int32)
-    hist_emb = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, True, drop_rate)
+    hist_emb = get_hist_emb(histograms, note_dim, indices, topk, True, drop_rate)
 
     # ndms_input = get_ndms_input(red_y, indices, topk, False, False)
     # ndms = get_ndms(ndms_input, note_dim, drop_rate)
     # ndms = get_ndms(red_y, top_notes, None, 1, note_emb, note_dim, drop_rate)
 
     cqt_emb = get_tonic_from_cqt(cqt, indices, topk, tonic_emb_size=note_dim, tonic_cnn_filters=128, drop_rate=drop_rate)
-
 
     tonic_emb = combine(hist_emb, cqt_emb, topk, note_dim, drop_rate, True)
 
@@ -391,48 +371,62 @@ def get_tonic_emb(red_y, cqt, note_emb, note_dim, drop_rate=0.2):
     return tonic_logits
 
 
-def get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate=0.2):
+def get_raga_emb(red_y, cqt, histograms, tonic_logits, note_emb, note_dim, random, drop_rate=0.2):
     topk = 9
     rs = topk//2
     re = (topk//2) + 1
 
-    c_note = freq_to_cents(31.7 * 2)
-    c_note = np.reshape(c_note, [6, 60])
-    c_note = np.sum(c_note, axis=0)
-    c_note = tf.concat([c_note, c_note, c_note], axis=0)
 
     tonic_argmax = tf.argmax(tonic_logits[0])
     indices = tf.range(tonic_argmax - rs, tonic_argmax + re)
     indices = tf.math.mod(60 + indices, 60)
     values = tf.gather(tonic_logits[0], indices)
+
+
     # c_note = tf.roll(c_note, tonic_argmax, axis=0)
     # values = c_note[60 + tonic_argmax - rs: 60+tonic_argmax+re]
     # values = tf.cast(values, tf.float32)
-    hist_emb = get_hist_emb(red_y, cqt, note_emb, note_dim, indices, topk, False, drop_rate)
+    # histograms = [tf.expand_dims(h,0) for h in histograms]
 
-    ndms_input_1 = get_ndms_input(red_y, cqt, indices, topk, False, False)
-    ndms_input_2 = get_ndms_input(tf.reverse(red_y, axis=[0]), tf.reverse(cqt, axis=[0]), indices, topk, False, True)
+    # hist_stand = [normalize(tf.matmul(hist_exp, hist_exp, transpose_a=True)) for hist_exp in histograms]
+    # hist_stand = tf.stack(hist_stand)
+    # hist_emb = get_ndms(hist_stand, note_dim, drop_rate=drop_rate)
 
-    # ndms_input = ndms_input_1
-    ndms_input = tf.concat([ndms_input_1, ndms_input_2], axis=0)
-    # ndms_input = (ndms_input_1 + ndms_input_2)/2
+    hist_emb = get_hist_emb(histograms, note_dim, indices, topk, False, drop_rate)
+
+    ndms_input_1 = get_ndms_input(red_y, cqt, histograms, indices, topk, False, random, False)
+    # ndms_input_2 = get_ndms_input(tf.reverse(red_y, axis=[0]), tf.reverse(cqt, axis=[0]), histograms, indices, topk, False, random, True)
+
     ndms_input = ndms_input_1
-    ndms = get_ndms(ndms_input, note_dim, drop_rate=drop_rate)
+    # ndms_input = tf.concat([ndms_input_1, ndms_input_2], axis=0)
+    # ndms_input = (ndms_input_1 + ndms_input_2)/2
+    # ndms_input = ndms_input_1
 
+
+
+    ndms = get_ndms(ndms_input, note_dim, drop_rate=0.7)
+
+    # ndms = tf.squeeze(ndms,2)
     # ndms = (ndms[:topk] + ndms[topk:])/2
 
     # ndms = ndms + hist_emb
     raga_emb = combine(hist_emb, ndms, topk, note_dim, drop_rate, False)
+    # raga_emb = ffnn(tf.concat([hist_emb, ndms], axis=1), [4*note_dim, 2*note_dim], [0.1,0.1])
     # raga_emb = hist_emb
-    raga_emb = ndms
+    # raga_emb = ndms
+    # raga_emb = hist_emb + ndms
     # raga_emb = Dense(2*note_dim, activation='relu', name='combine_2')(raga_emb)
     # top_notes_emb = get_top_notes_emb(top_notes_all_soft, note_emb, note_dim, indices, topk, False, drop_rate)
     #
     # raga_emb = combine(raga_emb, top_notes_emb, topk, note_dim, drop_rate, False,2)
     # raga_logits = Dense(30, activation='softmax', name='raga')(raga_emb)
+    # raga_emb = Dense(1)(tf.transpose(raga_emb))
+    # raga_emb = tf.transpose(raga_emb)
 
     raga_emb = tf.reduce_sum(tf.multiply(raga_emb, tf.expand_dims(values, 1)), axis=0, keepdims=True) / tf.reduce_sum(
         values)
+
+
 
     # hist_emb = tf.reduce_sum(tf.multiply(hist_emb, tf.expand_dims(values, 1)), axis=0, keepdims=True) / tf.reduce_sum(
     #     values)
@@ -463,18 +457,58 @@ def combine(emb1, emb2, topk, note_dim, drop_rate, is_tonic, id=1):
         emb = Dense(topk)(emb)
         return tf.transpose(emb)
     else:
-        if id==1:
-            name = 'combine'
-        else:
-            name = 'combine2'
+
+        # emb3 = ffnn(tf.concat([emb1, emb2], axis=1), [2*note_dim], [0.3])
+        # emb1 = Dropout(0.3)(emb1)
+        # emb2 = Dropout(0.3)(emb2)
+        f = Dense(1, activation='sigmoid')(tf.concat([emb1], axis=1))
+        # f1 = Dense(1, activation='sigmoid')(emb1)
+        f=0.5
+        # emb2 = emb2+f1
+        # f1 = Dense(1, activation='sigmoid')(emb2)
+        # emb2 = tf.transpose(Dense(9)(tf.transpose(emb2)))
+        emb = f * emb1+ (1-f) * emb2
+
+        return emb
+
+        f1 = Dense(1, activation='sigmoid')(emb1)
+        emb1 = emb1*f1
+        return emb1
+
+        f1 = Dense(1, activation='sigmoid')(emb2)
+        emb2 = emb2*f1
+
+
+        # emb = tf.transpose()
+        # emb = Dropout(0.2)(emb)
+        # emb = Dense(topk)(emb)
+        # emb1 =  tf.transpose(emb)
+
+        emb = tf.concat([emb1, emb2], axis=1)
+
+
+        f = Dense(1, activation='sigmoid')(tf.concat([emb1, emb3], axis=1))
         # d = Dense(2 * note_dim, name=name)(tf.concat([emb1, emb2], axis=1))
-        f = Dense(1, name=name, activation='sigmoid')(tf.concat([emb1,emb2], axis=1))
+
+        # emb = Dropout(0.5)(emb)
+        # emb = Dense(2*note_dim, name=name, activation='relu')(emb)
         # f = Dropout(0.2)(f)
         # if id==2:
         #     f = 1
-        emb = f * emb1 + (1 - f) * emb2
+        # f = Dropout(0.5)(f)
+        # f=0.5
+        emb = f *emb1 + (1 - f) * emb3
         emb = Dropout(0.2)(emb)
         return emb
+
+def get_histograms(red_y, cqt):
+    red_y_mean = tf.math.reduce_mean(red_y, 0)
+    red_y_std = tf.math.reduce_std(red_y, 0)
+    cqt_mean = tf.math.reduce_mean(cqt, 0)
+    cqt_std = tf.math.reduce_std(cqt, 0)
+
+    return [red_y_mean, red_y_std, cqt_mean, cqt_std]
+
 
 
 
@@ -498,56 +532,96 @@ def one_hot_note_emb():
     return note_embs
 
 
-def get_ndms_input(red_y, cqt, indices, topk, is_tonic, flip=False):
-
-    c_note = freq_to_cents(31.7 * 2, 25)
+def get_ndms_input(red_y, cqt, histograms, indices, topk, is_tonic, random=False, flip=False):
+    c_note = freq_to_cents(31.7 * 2, 40)
     c_note = np.reshape(c_note, [6, 60])
     c_note = np.sum(c_note, axis=0)
-
-    c_note_5 = tf.reduce_mean([tf.roll(c_note, i, 0) for i in range(-2, 3)], axis=0)
-    c_note_5 = (c_note_5 - tf.reduce_min(c_note_5)) / (tf.reduce_max(c_note_5) - tf.reduce_min(c_note_5))
-    mask = 1 - tf.keras.layers.Lambda(
+    c_note_5 = c_note
+    #     c_note_5 = tf.reduce_mean([tf.roll(c_note, i, 0) for i in range(-2, 3)], axis=0)
+    c_note_5 = normalize(c_note_5)
+    # c_note_5 = tf.constant([1,0,0,0,0,0,0,0,0,0,0,0], dtype=tf.float64)
+    diag_notes = tf.keras.layers.Lambda(
         lambda x: tf.map_fn(lambda a: tf.roll(tf.constant(c_note_5), a, axis=-1), x, tf.float64))(tf.range(60))
+    diag_notes = tf.cast(diag_notes, tf.float32)
+    diag_notes = 1 - normalize(diag_notes)
+
+    histograms = [normalize(h) for h in histograms]
+    histograms_mat = [tf.matmul(tf.pow(tf.expand_dims(h, 0), 0.5), tf.pow(tf.expand_dims(h, 0), 0.5), transpose_a=True)
+                      for h in histograms]
+    histograms_mat = [normalize(tf.multiply(normalize(tf.cast(h, tf.float32)), 1 - diag_notes)) for h in histograms_mat]
+    # histograms_mat = [tf.roll(h, [3, 3], axis=[0, 1]) for h in histograms_mat]
+
+    c_note = freq_to_cents(31.7 * 2, 100)
+    c_note = np.reshape(c_note, [6, 60])
+    c_note = np.sum(c_note, axis=0)
+    c_note_5 = c_note
+    #     c_note_5 = tf.reduce_mean([tf.roll(c_note, i, 0) for i in range(-2, 3)], axis=0)
+    c_note_5 = normalize(c_note_5)
+    # c_note_5 = tf.constant([1,0,0,0,0,0,0,0,0,0,0,0], dtype=tf.float64)
+    diag_notes = tf.keras.layers.Lambda(
+        lambda x: tf.map_fn(lambda a: tf.roll(tf.constant(c_note_5), a, axis=-1), x, tf.float64))(tf.range(60))
+    diag_notes = tf.cast(diag_notes, tf.float32)
+    diag_notes = 1 - normalize(diag_notes)
+
+    diag_mat_red_y = tf.cast(tf.matmul(red_y, red_y, transpose_a=True), tf.float32)
+    diag_mat_red_y = tf.roll(diag_mat_red_y, [2,2], axis=[0,1])
 
 
-    cqt_argmax = tf.argmax(cqt, axis=1)
-    # cqt_one_hot = tf.one_hot(cqt_argmax, 60)
-
-    red_cqt = tf.keras.layers.Lambda(
-        lambda x: tf.map_fn(lambda a: tf.roll(tf.constant(c_note), a, axis=-1), x, tf.float64))(cqt_argmax)
-
-    top_notes_all, top_notes_all_soft = get_top_notes(red_y, red_cqt)
+    # top_notes = []
+    # for i in range(3, 60, 5):
+    #     shift = tf.random.uniform(shape=(), minval=-1, maxval=2, dtype=tf.int32)
+    #     shift = shift*tf.cast(random, tf.int32)
+    #     top_notes.append(i + shift)
+    # top_notes = tf.stack(top_notes)
+    top_notes = tf.range(2, 60, 5)
+    top_notes = tf.reduce_sum(tf.one_hot(top_notes, 60), 0)
 
     matmuls = []
     # note_emb_mat = tf.matmul(note_emb, note_emb, transpose_b=True)
     # note_emb_mat = note_emb_mat / note_dim
     # note_emb_mat = tf.cast(note_emb_mat, tf.float64)
-    for i in range(2):
-        red_y_clustered = cluster_top_notes(red_y, top_notes_all[i])
-        red_y_am, red_y_am_val = get_unique_seq_1(red_y_clustered)
-        matmul = 0
-        for s in range(1,6):
-            matmul+=get_ndms_mat(red_y_am, red_y_am_val, mask, -1*s)
-
+    red_y_clustered = cluster_top_notes(red_y, top_notes)
+    red_y_am, red_y_am_val = get_unique_seq_1(red_y_clustered)
+    matmul = 0
+    for s in range(1, 5):
+        matmul += get_ndms_mat(red_y_am, red_y_am_val, -1 * s)
         # matmul = get_ndms_mat(red_y_am, red_y_am_val, -1)
-        if flip:
-            matmul = tf.transpose(matmul)
-        matmuls.append(min_max_scale(matmul, is_tonic))
 
-    for i in range(2,4):
-        red_y_clustered = cluster_top_notes(red_y, top_notes_all[i])
-        red_y_am, red_y_am_val = get_unique_seq_1(red_y_clustered)
-        matmul = 0
-        for s in range(1,6):
-            matmul+=get_ndms_mat(red_y_am, red_y_am_val, mask, -1*s)
-        if flip:
-            matmul = tf.transpose(matmul)
-        matmuls.append(min_max_scale(matmul, is_tonic))
+    for idx, hist in enumerate(histograms[:2]):
+        # if idx >= 2:
+        #     hist = AvgPool1D(pool_size=3, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(hist, 0), 2))[0, :,
+        #            0]
+        hist = normalize(hist)
+        hist_exp = tf.expand_dims(hist, 0)
+        hist_exp = tf.math.pow(hist_exp, 0.5)
+        hist_stand = normalize(tf.matmul(hist_exp, hist_exp, transpose_a=True))
 
-        # red_y_am = get_unique_seq_2(red_y_am)
-        # red_y_am, red_y_am_val = get_unique_seq_1(red_y_am)
-        # matmul = get_ndms_mat(red_y_am, red_y_am_val, -1)
-        # matmuls.append(min_max_scale(matmul, is_tonic))
+        diag_notes_stand = normalize(diag_notes)
+        temp_mat = matmul
+        temp_mat = normalize(normalize(tf.cast(temp_mat, tf.float32)) * normalize(hist_stand * diag_notes_stand))
+
+        temp_mat = normalize(normalize(tf.cast(temp_mat, tf.float32) * diag_notes_stand) + normalize(histograms_mat[int(tf.math.mod(idx,4))]))
+
+        # temp_mat = normalize(normalize(tf.cast(temp_mat, tf.float32) * diag_notes_stand))
+
+        # temp_mat = normalize(temp_mat * diag_notes_stand)
+        # temp_mat = normalize(normalize(temp_mat * diag_notes_stand))
+        # temp_mat = normalize(
+        #     normalize(temp_mat * diag_notes_stand) + normalize(diag_mat_red_y))
+        # temp_mat = normalize(normalize(tf.cast(tf.math.pow(temp_mat, 0.7), tf.float32)) * normalize(hist_stand))
+        temp_mat = normalize(temp_mat)
+        temp_mat = standardize(temp_mat)
+        # temp_mat = normalize(temp_mat)
+        # temp_mat_1 = standardize(histograms_mat[idx])
+        if flip:
+            temp_mat = tf.transpose(temp_mat)
+            # temp_mat_1 = tf.transpose(temp_mat_1)
+        # matmuls.append(temp_mat_1)
+        matmuls.append(temp_mat)
+        matmuls.append(temp_mat)
+
+    # matmuls.append(matmuls[0])
+    # matmuls.append(matmuls[1])
 
     matmul = tf.stack(matmuls, axis=2)
     ndms = []
@@ -563,11 +637,25 @@ def get_ndms_input(red_y, cqt, indices, topk, is_tonic, flip=False):
             ndms.append(matmul_tmp)
         ndms = tf.stack(ndms)
 
-    ndms = Dropout(0.4)(ndms)
+        ndms = Dropout(0.4)(ndms)
 
     return ndms
 
+
 def get_ndms(ndms, note_dim, drop_rate=0.2):
+
+    # z = Conv2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu', padding='same')(ndms)
+    # z = BatchNormalization()(z)
+    # z = MaxPool2D(pool_size=(2, 2), strides=None, padding='valid')(z)
+    # z = Dropout(drop_rate)(z)
+    # z = Conv2D(filters=128, kernel_size=(3, 3), strides=(1, 1), activation='relu', padding='valid')(z)
+    # z = MaxPool2D(pool_size=(2, 2), strides=None, padding='valid')(z)
+    # z = BatchNormalization()(z)
+    # z = Dropout(drop_rate)(z)
+    # z = Flatten()(z)
+    # z = Dense(2*note_dim, activation='relu')(z)
+    # return z
+
 
     z = Conv2D(filters=64, kernel_size=(5, 5), strides=(1, 1), activation='relu', padding='same')(ndms)
     z = Conv2D(filters=64, kernel_size=(5, 5), strides=(1, 1), activation='relu', padding='same')(z)
@@ -584,8 +672,12 @@ def get_ndms(ndms, note_dim, drop_rate=0.2):
     z = BatchNormalization()(z)
     z = MaxPool2D(pool_size=(2, 2), strides=None, padding='valid')(z)
     z = Flatten()(z)
-    z = Dense(3 * note_dim, activation='relu')(z)
+    z = Dropout(drop_rate)(z)
+    # z = Dense(8 * note_dim, activation='relu')(z)
     # z = Dropout(drop_rate)(z)
+    z = Dense(2 * note_dim, activation='relu')(z)
+    # z = Dropout(drop_rate)(z)
+    # z = Dropout(0.2)(z)
     # z = min_max_scale(z, False)
     return z
 
@@ -660,8 +752,8 @@ def conv_tonic(pred_tonic, topk):
     return values, indices
 
 
-def get_ndms_mat(ndms, ndms_val, mask, shift=-1):
-    c_note = freq_to_cents(65.41)
+def get_ndms_mat(ndms, ndms_val, shift=-1):
+    c_note = freq_to_cents(65.41,25)
     c_note = np.reshape(c_note, [6,60])
     c_note = np.sum(c_note,axis=0)
     ndms_ohe = tf.keras.layers.Lambda(lambda x: tf.map_fn(lambda a: tf.roll(tf.constant(c_note), a, axis=-1), x, tf.float64))(ndms)
@@ -677,7 +769,6 @@ def get_ndms_mat(ndms, ndms_val, mask, shift=-1):
     # ndms_roll_ohe = tf.one_hot(ndms_roll, 60)
     matmul = tf.matmul(ndms_ohe, ndms_roll_ohe, transpose_a=True)
 
-    matmul = matmul*mask
     return matmul
 
 
@@ -745,27 +836,19 @@ def get_raga_from_transformer(red_y_am, note_emb_add, note_dim, dropout):
     return encoding
 
 
-def min_max_scale(y, is_tonic):
-    #
-    # if not is_tonic:
-    #     y_min = tf.reduce_min(y)
-    #     z = (y - y_min)/(tf.reduce_max(y)-y_min)
-    #     z = tf.math.pow(z, 0.7)
-    #     # z_min = tf.reduce_min(z)
-    #     # z = (z - z_min)/(tf.reduce_max(z)-z_min)
-    #     return (z - tf.reduce_mean(z)) / (tf.math.reduce_std(z))
-    #     # return z
-    # else:
-    #     z = y
-    z = y
+def standardize(z):
     return (z - tf.reduce_mean(z)) / (tf.math.reduce_std(z))
 
+def normalize(z):
+    min_z = tf.reduce_min(z)
+    return (z - min_z) / (tf.reduce_max(z) - min_z)
 
-def ffnn(inputs, hidden_size, drop_rate=0.4):
+
+def ffnn(inputs, hidden_size, drop_rate):
     x = inputs
-    for hs in hidden_size:
+    for idx, hs in enumerate(hidden_size):
         den = Dense(hs, activation='relu')(x)
-        x = Dropout(drop_rate)(den)
+        x = Dropout(drop_rate[idx])(den)
     return x
 
 
@@ -836,7 +919,7 @@ def train(task, tradition):
         #                     validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
         #                     callbacks=[checkpoint])
         model.fit_generator(generator=training_generator,
-                            validation_data=test_generator, verbose=1, epochs=50, shuffle=True,
+                            validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
                             callbacks=[checkpoint])
 
 
@@ -881,7 +964,7 @@ def test(task, tradition):
     raga_pred = None
     tonic_pred = None
     all_p = []
-    for i in range(3):
+    for i in range(11):
         p = model.predict_generator(test_generator, verbose=1)
         all_p.append(np.argmax(p[0], axis=1))
 
