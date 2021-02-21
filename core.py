@@ -23,7 +23,7 @@ import recorder
 from scipy import stats
 from pydub import AudioSegment
 from resampy import resample
-
+import mir_eval
 # store as a global variable, since we only support a few models for now
 from data_generator import DataGenerator
 
@@ -52,7 +52,7 @@ models = {
 # n_labels = 30
 # config = pyhocon.ConfigFactory.parse_file("crepe/experiments.conf")['test']
 
-def build_and_load_model(config, task='raga'):
+def build_and_load_model(config, task, tradition):
     """
     Build the CNN model and load the weights
 
@@ -81,7 +81,6 @@ def build_and_load_model(config, task='raga'):
     n_frames = 1 + int((model_srate * cutoff - 1024) / hop_size)
     n_seq = int(n_frames // sequence_length)
 
-    n_labels = config['n_labels']
 
     note_dim = config['note_dim']
 
@@ -125,14 +124,25 @@ def build_and_load_model(config, task='raga'):
     # Tonic
     histograms = get_histograms(red_y, cqt)
     tonic_logits = get_tonic_emb(red_y, cqt, histograms, note_emb, note_dim, drop_rate_tonic)
+    tonic_logits_roll = tf.roll(tonic_logits, transpose_by, axis=-1, name='tonic')
+
+    tonic_model = Model(inputs=[pitches_batch, random_batch, cqt_batch], outputs=[tonic_logits_roll])
+    tonic_model.load_weights('model/carnatic_tonic_model.hdf5', by_name=True, skip_mismatch=True)
+
+    if task=='tonic':
+        tonic_model = Model(inputs=[pitches_batch, random_batch, cqt_batch], outputs=[tonic_logits_roll])
+        tonic_model.load_weights('model/hindustani_tonic_model.hdf5', by_name=True, skip_mismatch=True)
+        tonic_model.compile(loss={'tf_op_layer_tonic': 'binary_crossentropy'},
+                          optimizer='adam', metrics={'tf_op_layer_tonic': 'accuracy'},
+                          loss_weights={'tf_op_layer_tonic': 1})
+        return tonic_model
 
     raga_emb = get_raga_emb(red_y, cqt, histograms, tonic_logits, note_emb, note_dim, random, drop_rate_raga)
     # raga_logits = get_raga_emb(red_y, cqt, tonic_logits, note_emb, note_dim, drop_rate_raga)
+    n_labels = config[tradition + '_n_labels']
     raga_logits = Dense(n_labels, activation='softmax', name='raga')(raga_emb)
 
     loss_weights = config['loss_weights']
-
-    tonic_logits_roll = tf.roll(tonic_logits, transpose_by, axis=-1, name='tonic')
 
     rag_model = Model(inputs=[pitches_batch, random_batch, cqt_batch], outputs=[raga_logits, tonic_logits_roll])
     cce = tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.0)
@@ -144,8 +154,8 @@ def build_and_load_model(config, task='raga'):
                       optimizer='adam', metrics={'raga': 'accuracy', 'tf_op_layer_tonic': 'accuracy'},
                       loss_weights={'raga': loss_weights[0], 'tf_op_layer_tonic': loss_weights[1]})
 
-    # rag_model.load_weights('model/carnatic_raga_model.hdf5', by_name=True, skip_mismatch=True)
-    rag_model.load_weights('model/hindustani_raga_model.hdf5', by_name=True, skip_mismatch=True)
+    rag_model.load_weights('model/carnatic_raga_model.hdf5', by_name=True, skip_mismatch=True)
+    # rag_model.load_weights('model/hindustani_raga_model.hdf5', by_name=True, skip_mismatch=True)
 
     # rag_model.compile(loss={'raga': 'categorical_crossentropy'},
     #                   optimizer='adam', metrics={'raga': 'accuracy'},
@@ -250,7 +260,7 @@ def get_hist_emb(histograms, note_dim, indices, topk, is_tonic, drop_rate=0.2):
     hist_cc_all = tf.stack(hist_cc_all)
 
     if is_tonic:
-        hist_cc_all = Dropout(0.3)(hist_cc_all)
+        hist_cc_all = Dropout(0.1)(hist_cc_all)
     else:
         hist_cc_all = Dropout(0.1)(hist_cc_all)
 
@@ -259,7 +269,7 @@ def get_hist_emb(histograms, note_dim, indices, topk, is_tonic, drop_rate=0.2):
     if is_tonic:
         f=64
     else:
-        f=64
+        f=96
 
     z = convolution_block(d, hist_cc_all, 5, f, drop_rate)
     z = convolution_block(d, z, 3, 2*f, drop_rate)
@@ -304,11 +314,11 @@ def get_raga_emb(red_y, cqt, histograms, tonic_logits, note_emb, note_dim, rando
     hist_emb = get_hist_emb(histograms, note_dim, indices, topk, False, drop_rate)
 
     ndms_input_1 = get_ndms_input(red_y, cqt, histograms, indices, topk, False, random, False)
-    ndms_input_2 = get_ndms_input(tf.reverse(red_y, axis=[0]), tf.reverse(cqt, axis=[0]), histograms, indices, topk, False, random, True)
+    # ndms_input_2 = get_ndms_input(tf.reverse(red_y, axis=[0]), tf.reverse(cqt, axis=[0]), histograms, indices, topk, False, random, True)
 
-    # ndms_input = ndms_input_1
+    ndms_input = ndms_input_1
     # ndms_input = tf.concat([ndms_input_1, ndms_input_2], axis=0)
-    ndms_input = (ndms_input_1 + ndms_input_2)/2
+    # ndms_input = (ndms_input_1 + ndms_input_2)/2
     # ndms_input = ndms_input_1
 
     ndms = get_ndms(ndms_input, note_dim, drop_rate=drop_rate)
@@ -316,7 +326,7 @@ def get_raga_emb(red_y, cqt, histograms, tonic_logits, note_emb, note_dim, rando
     # ndms = (ndms[:topk] + ndms[topk:])/2
 
     raga_emb = combine(hist_emb, ndms, topk, note_dim, drop_rate, False)
-    # raga_emb = hist_emb
+    raga_emb = hist_emb
     raga_emb = tf.reduce_sum(tf.multiply(raga_emb, tf.expand_dims(values, 1)), axis=0, keepdims=True) / tf.reduce_sum(
         values)
 
@@ -339,9 +349,9 @@ def combine(emb1, emb2, topk, note_dim, drop_rate, is_tonic, id=1):
         emb = Dense(topk)(emb)
         return tf.transpose(emb)
     else:
-
+        # emb2 = (emb1 + emb2)/2
         f = Dense(1, activation='sigmoid')(tf.concat([emb1], axis=1))
-        # f=0
+        f=0
         emb = f * emb1+ (1-f) * emb2
 
         return emb
@@ -368,6 +378,9 @@ def get_histograms(red_y, cqt):
     red_y_std = tf.math.reduce_std(red_y, 0)
     cqt_mean = tf.math.reduce_mean(cqt, 0)
     cqt_std = tf.math.reduce_std(cqt, 0)
+
+    cqt_mean = tf.roll(cqt_mean, 3, axis=-1)
+    cqt_std = tf.roll(cqt_std, 3, axis=-1)
 
     return [red_y_mean, red_y_std, cqt_mean, cqt_std]
 
@@ -425,34 +438,63 @@ def get_ndms_input(red_y, cqt, histograms, indices, topk, is_tonic, random=False
     diag_notes = tf.cast(diag_notes, tf.float32)
     diag_notes = 1 - normalize(diag_notes)
 
+    diag_mat_red_y = tf.cast(tf.matmul(red_y, red_y, transpose_a=True), tf.float32)
+    #     diag_mat_red_y = tf.roll(diag_mat_red_y, [2,2], axis=[0,1])
 
-    top_notes = tf.range(2, 60, 5)
+    #     top_notes = []
+    #     shift = tf.random.uniform(shape=(), minval=-2, maxval=3, dtype=tf.int32)
+    #     top_notes = []
+    #     random = True
+    #     for i in range(3, 60, 5):
+    #         shift = tf.random.uniform(shape=(), minval=-2, maxval=3, dtype=tf.int32)
+    #         shift = shift*tf.cast(random, tf.int32)
+    #         top_notes.append(i + shift)
+    #     print(top_notes)
+    #     top_notes = tf.stack(top_notes)
+    top_notes = tf.range(0, 60, 5)
     top_notes = tf.reduce_sum(tf.one_hot(top_notes, 60), 0)
 
     matmuls = []
+    # note_emb_mat = tf.matmul(note_emb, note_emb, transpose_b=True)
+    # note_emb_mat = note_emb_mat / note_dim
+    # note_emb_mat = tf.cast(note_emb_mat, tf.float64)
     red_y_clustered = cluster_top_notes(red_y, top_notes)
     red_y_am, red_y_am_val = get_unique_seq_1(red_y_clustered, red_y)
     matmul = 0
     for s in range(1, 5):
         matmul += get_ndms_mat(red_y_am, red_y_am_val, -1 * s)
+        # matmul = get_ndms_mat(red_y_am, red_y_am_val, -1)
 
     for idx, hist in enumerate(histograms[:4]):
+        # if idx >= 2:
+        #     hist = AvgPool1D(pool_size=3, strides=1, padding='same')(tf.expand_dims(tf.expand_dims(hist, 0), 2))[0, :,
+        #            0]
         hist = normalize(hist)
         hist_exp = tf.expand_dims(hist, 0)
         hist_exp = tf.math.pow(hist_exp, 0.5)
-        hist_stand = normalize(tf.matmul(hist_exp, hist_exp, transpose_a=True))
-
-        diag_notes_stand = normalize(diag_notes)
+        hist_stand = tf.cast(normalize(tf.matmul(hist_exp, hist_exp, transpose_a=True)), tf.float32)
+        diag_notes_stand = tf.cast(normalize(diag_notes), tf.float32)
         temp_mat = matmul
         temp_mat = normalize(normalize(tf.cast(temp_mat, tf.float32)) * normalize(hist_stand * diag_notes_stand))
 
-        temp_mat = normalize(normalize(tf.cast(temp_mat, tf.float32) * diag_notes_stand) + normalize(histograms_mat[int(tf.math.mod(idx,4))]))
-
+        #         temp_mat = tf.roll(temp_mat, [-2, -2], axis=[0, 1])
+        temp_mat = normalize(normalize(tf.cast(temp_mat, tf.float32) * diag_notes_stand)+ normalize(
+            histograms_mat[int(tf.math.mod(idx, 4))]))
+        # temp_mat = normalize(tf.cast(temp_mat, tf.float32) * diag_notes_stand)
+        # temp_mat = normalize(temp_mat * diag_notes_stand)
+        # temp_mat = normalize(normalize(temp_mat * diag_notes_stand))
+        # temp_mat = normalize(
+        #     normalize(temp_mat * diag_notes_stand) + normalize(diag_mat_red_y))
+        # temp_mat = normalize(normalize(tf.cast(tf.math.pow(temp_mat, 0.7), tf.float32)) * normalize(hist_stand))
         temp_mat = normalize(temp_mat)
         temp_mat = standardize(temp_mat)
+        temp_mat = tf.roll(temp_mat, [3,3], [0,1])
+        # temp_mat = normalize(temp_mat)
+        # temp_mat_1 = standardize(histograms_mat[idx])
         if flip:
             temp_mat = tf.transpose(temp_mat)
-
+            # temp_mat_1 = tf.transpose(temp_mat_1)
+        # matmuls.append(temp_mat_1)
         matmuls.append(temp_mat)
         # matmuls.append(temp_mat)
 
@@ -473,7 +515,7 @@ def get_ndms_input(red_y, cqt, histograms, indices, topk, is_tonic, random=False
             ndms.append(matmul_tmp)
         ndms = tf.stack(ndms)
 
-        ndms = Dropout(0.2)(ndms)
+        # ndms = Dropout(0.2)(ndms)
 
     return ndms
 
@@ -486,7 +528,7 @@ def get_ndms(ndms, note_dim, drop_rate=0.2):
     z = convolution_block(d, z, 3, 2*f, drop_rate)
     z = convolution_block(d, z, 3, 4*f, drop_rate)
     z = Flatten()(z)
-    z = Dropout(drop_rate)(z)
+    # z = Dropout(drop_rate)(z)
     z = Dense(2 * note_dim, activation='relu')(z)
     return z
 
@@ -565,7 +607,7 @@ def conv_tonic(pred_tonic, topk):
 
 
 def get_ndms_mat(ndms, ndms_val, shift=-1):
-    c_note = freq_to_cents(65.41,25)
+    c_note = freq_to_cents(31.7 * 2,25)
     c_note = np.reshape(c_note, [6,60])
     c_note = np.sum(c_note,axis=0)
     ndms_ohe = tf.keras.layers.Lambda(lambda x: tf.map_fn(lambda a: tf.roll(tf.constant(c_note), a, axis=-1), x, tf.float64))(ndms)
@@ -717,15 +759,15 @@ def train(task, tradition):
         training_generator = DataGenerator(task, tradition, 'train', config, random=True, shuffle=True, full_length=True)
         validation_generator = DataGenerator(task, tradition, 'validate', config, random=False, shuffle=False, full_length=False)
         test_generator = DataGenerator(task, tradition, 'test', config, random=False, shuffle=False, full_length=False)
-        model = build_and_load_model(config, task)
+        model = build_and_load_model(config, task, tradition)
         # model.load_weights(tonic_model_path, by_name=True)
         # model.load_weights('model/model-full.h5', by_name=True)
         # model.fit(generator)
         # model.fit(x=training_generator,
         #                     validation_data=validation_generator, verbose=2, epochs=15, shuffle=True, batch_size=1)
 
-        checkpoint = ModelCheckpoint(raga_model_path, monitor='val_raga_accuracy', verbose=1,
-                                     save_best_only=True, mode='max', period=1)
+        checkpoint = ModelCheckpoint(raga_model_path, monitor='val_raga_loss', verbose=1,
+                                     save_best_only=True, mode='min', period=1)
         # early_stopping_callback = EarlyStopping(monitor="val_loss", patience=5, mode="auto", restore_best_weights=True, min_delta=0.0000001)
         # model.fit_generator(generator=training_generator,
         #                     validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
@@ -742,17 +784,19 @@ def train_tonic(tradition):
     #     return model_path
 
     config = pyhocon.ConfigFactory.parse_file("experiments.conf")[task]
-    training_generator = DataGenerator(task, tradition, 'train', config)
-    validation_generator = DataGenerator(task, tradition, 'validate', config)
-    model = build_and_load_model(config, task)
+    training_generator = DataGenerator(task, tradition, 'train', config, random=True, shuffle=True, full_length=True)
+    validation_generator = DataGenerator(task, tradition, 'validate', config, random=False, shuffle=False,
+                                         full_length=False)
+    test_generator = DataGenerator(task, tradition, 'test', config, random=False, shuffle=False, full_length=False)
+    model = build_and_load_model(config, task, tradition)
     # model.load_weights('model/model-large.h5', by_name=True)
     # model.fit(generator)
     # model.fit(x=training_generator,
     #                     validation_data=validation_generator, verbose=2, epochs=15, shuffle=True, batch_size=1)
-    checkpoint = ModelCheckpoint(model_path, monitor='loss', verbose=1,
-                                 save_best_only=True, mode='auto', period=1)
+    checkpoint = ModelCheckpoint(model_path, monitor='val_loss', verbose=1,
+                                 save_best_only=True, mode='min', period=1)
     model.fit_generator(generator=training_generator,
-                        validation_data=validation_generator, verbose=1, epochs=15, shuffle=True,
+                        validation_data=validation_generator, verbose=1, epochs=50, shuffle=True,
                         callbacks=[checkpoint])
 
     return model_path
@@ -760,43 +804,57 @@ def train_tonic(tradition):
 
 def test(task, tradition):
     config = pyhocon.ConfigFactory.parse_file("experiments.conf")[task]
+    # test_generator = DataGenerator(task, tradition, 'test', config, random=True, shuffle=False, full_length=True)
     test_generator = DataGenerator(task, tradition, 'test', config, random=True, shuffle=False, full_length=True)
-    # test_generator = DataGenerator(task, tradition, 'validate', config, random=True, shuffle=False, full_length=True)
     # test_generator = DataGenerator(task, tradition, 'validate', config, random=True, shuffle=False,
     #                                      full_length=True)
     # test_generator = DataGenerator(task, tradition, 'test', config, random=True)
-    model = build_and_load_model(config, task)
+    model = build_and_load_model(config, task, tradition)
     # model.fit(generator)
     # model.fit(x=training_generator,
     #                     validation_data=validation_generator, verbose=2, epochs=15, shuffle=True, batch_size=1)
     # model.load_weights('model/hindustani_tonic_model.hdf5', by_name=True)
     # model.load_weights('model/model-full.h5'.format(tradition, 'tonic'), by_name=True)
     # model.load_weights('model/{}_{}_model.hdf5'.format(tradition, 'tonic'), by_name=True)
-    model.load_weights('model/{}_raga_model.hdf5'.format(tradition), by_name=True)
+    model.load_weights('model/{}_{}_model.hdf5'.format(tradition, task), by_name=True)
     data = test_generator.data
-    raga_pred = None
-    tonic_pred = None
-    all_p = []
-    for i in range(5):
-        p = model.predict_generator(test_generator, verbose=1)
-        all_p.append(np.argmax(p[0], axis=1))
+    k=9
+    if task=='raga':
+        raga_pred = None
+        tonic_pred = None
+        all_p = []
+        for i in range(k):
+            p = model.predict_generator(test_generator, verbose=1)
+            all_p.append(np.argmax(p[0], axis=1))
 
-        # print(np.argmax(p[0], axis=1))
-        if raga_pred is None:
-            raga_pred = p[0]
-            tonic_pred = p[1]
-        else:
-            raga_pred += p[0]
-            tonic_pred += p[1]
-    # all_p = np.array(all_p)
-    print(stats.mode(all_p, axis=0))
-    data['predicted_raga'] = np.argmax(raga_pred, axis=1)
+            # print(np.argmax(p[0], axis=1))
+            if raga_pred is None:
+                raga_pred = p[0]
+                tonic_pred = p[1]
+            else:
+                raga_pred += p[0]
+                tonic_pred += p[1]
+        # all_p = np.array(all_p)
+        print(stats.mode(all_p, axis=0))
+        data['predicted_raga'] = np.argmax(raga_pred, axis=1)
+        acc = 0
+        print(data['predicted_raga'].values)
+        for t,p in zip(data['labels'].values, data['predicted_raga'].values):
+            acc += int(t == p)
+        print('raga accuracy: {}'.format(acc/data.shape[0]))
+    else:
+        tonic_pred = None
+        for i in range(k):
+            p = model.predict_generator(test_generator, verbose=1)
+            # print(np.argmax(p[0], axis=1))
+            if tonic_pred is None:
+                tonic_pred = p
+            else:
+                tonic_pred += p
+        tonic_pred = tonic_pred/k
+        # tonic_pred = tonic_pred
+        # all_p = np.array(all_p)
 
-    acc = 0
-    print(data['predicted_raga'].values)
-    for t,p in zip(data['labels'].values, data['predicted_raga'].values):
-        acc += int(t == p)
-    print('raga accuracy: {}'.format(acc/data.shape[0]))
     # model.evaluate_generator(generator=test_generator, verbose=1)
     # p = model.predict_generator(test_generator, verbose=1)
     # print(p[0, :, :, 0])
@@ -820,16 +878,50 @@ def test(task, tradition):
     # for pi in p[0]:
     #     print(pi)
     cents = to_local_average_cents(tonic_pred)
-    frequency = 10 * 2 ** (cents / 1200)
-    #
-    data['predicted_tonic'] = frequency
+    pred_frequency = 10 * 2 ** (cents / 1200)
+
+    data['predicted_tonic'] = pred_frequency
     data.to_csv(config[tradition+'_'+'output'], index=False, sep='\t')
+
+    full_data = pd.read_csv(config[tradition+'_'+'output'], sep='\t')
+
+    for name, data in full_data.groupby('data_type'):
+        tonic_label = []
+        for a in data['tonic'].values:
+            if a/4>61.74:
+                tonic_label.append(a/8)
+            else:
+                tonic_label.append(a/4)
+        tonic_label = np.array(tonic_label)
+
+        pred_frequency = data['predicted_tonic'].values
+
+        ref_t = np.zeros_like(pred_frequency)
+        (ref_v, ref_c,
+         est_v, est_c) = mir_eval.melody.to_cent_voicing(ref_t,
+                                                         pred_frequency,
+                                                         ref_t,
+                                                         tonic_label)
+
+
+        acc_50 = mir_eval.melody.raw_pitch_accuracy(ref_v[1:], ref_c[1:],
+                                                    est_v[1:], est_c[1:], cent_tolerance=50)
+        acc_30 = mir_eval.melody.raw_pitch_accuracy(ref_v[1:], ref_c[1:],
+                                                    est_v[1:], est_c[1:], cent_tolerance=30)
+        acc_10 = mir_eval.melody.raw_pitch_accuracy(ref_v[1:], ref_c[1:],
+                                                    est_v[1:], est_c[1:], cent_tolerance=10)
+
+        print('tonic accuracies for {}, {}, {}, {}'.format(name, acc_50, acc_30, acc_10))
+
+
+    #
+
     # print('pred', frequency)
 
 
 def test_pitch(task, tradition):
     config = pyhocon.ConfigFactory.parse_file("experiments.conf")[task]
-    model = build_and_load_model(config, task)
+    model = build_and_load_model(config, task, tradition)
     model.load_weights('model/model-full.h5', by_name=True)
     model_srate = config['model_srate']
     step_size = config['hop_size']
@@ -886,11 +978,11 @@ def test_pitch(task, tradition):
 
 def predict_run_time(tradition, seconds=60):
     pitch_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['pitch']
-    pitch_model = build_and_load_model(pitch_config, 'pitch')
+    pitch_model = build_and_load_model(pitch_config, 'pitch', tradition)
     pitch_model.load_weights('model/model-full.h5', by_name=True)
 
     raga_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
-    raga_model = build_and_load_model(raga_config, 'raga')
+    raga_model = build_and_load_model(raga_config, 'raga', tradition)
     raga_model.load_weights('model/{}_raga_model.hdf5'.format(tradition), by_name=True)
 
     while True:
@@ -918,11 +1010,11 @@ def get_raga_tonic_prediction(audio, pitch_config, pitch_model, raga_model):
 def predict_run_time_file(file_path, tradition, filetype='wav'):
 
     pitch_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['pitch']
-    pitch_model = build_and_load_model(pitch_config, 'pitch')
+    pitch_model = build_and_load_model(pitch_config, 'pitch',tradition)
     pitch_model.load_weights('model/model-full.h5', by_name=True)
 
     raga_config = pyhocon.ConfigFactory.parse_file("experiments.conf")['raga']
-    raga_model = build_and_load_model(raga_config, 'raga')
+    raga_model = build_and_load_model(raga_config, 'raga', tradition)
     raga_model.load_weights('model/{}_raga_model.hdf5'.format(tradition), by_name=True)
 
     if filetype == 'mp3':
