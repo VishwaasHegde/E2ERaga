@@ -12,6 +12,7 @@ from shutil import copyfile
 from tqdm import tqdm
 model_srate = 16000
 import pydub
+import utils
 import argparse
 
 
@@ -19,17 +20,26 @@ def create_tonic_test_train_split(config):
     data_path = config['data_path']
     split = config['split']
     cm_paths = []
-    cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets','CompMusicWorkshop2012', 'Info_file_237.tsv'))
-    cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'CompMusicWorkshop2012', 'Info_file_540.tsv'))
-    cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'ISMIR2012', 'ISMIR2012.tsv'))
+    # cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets','CompMusicWorkshop2012', 'Info_file_237.tsv'))
+    # cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'CompMusicWorkshop2012', 'Info_file_540.tsv'))
+    # cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'ISMIR2012', 'ISMIR2012.tsv'))
     cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'JNMR2014','CM', 'CM1.tsv'))
     cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'JNMR2014', 'CM', 'CM2.tsv'))
     cm_paths.append(os.path.join(data_path, 'TonicDataset','datasets', 'JNMR2014', 'CM', 'CM3.tsv'))
+    cm_paths.append(os.path.join(data_path, 'TonicDataset', 'datasets', 'JNMR2014', 'IISc', 'IISc.tsv'))
+    # cm_paths.append(os.path.join(data_path, 'TonicDataset', 'datasets', 'JNMR2014', 'IITM', 'IITM1.tsv'))
+    cm_paths.append(os.path.join(data_path, 'TonicDataset', 'datasets', 'JNMR2014', 'IITM', 'IITM2.tsv'))
+
 
     data_dict = defaultdict(list)
-    for cm_path in cm_paths:
+    for idx, cm_path in enumerate(cm_paths):
         data = pd.read_csv(cm_path,sep='\t')
-        data = data[['path', 'tonic(hz)', 'tradition']]
+
+        if idx>2:
+            data['tradition'] = 'Carnatic'
+
+        data['data_type'] = cm_path[cm_path.rindex('\\')+1:][:-4]
+        data = data[['path', 'tonic(hz)', 'tradition', 'data_type']]
         data['tonic'] = data['tonic(hz)'] 
         trad_groups = data.groupby(['tradition'])
 
@@ -37,44 +47,49 @@ def create_tonic_test_train_split(config):
             trad_val['path'] = trad_val['path'].map(lambda x: os.path.join(data_path,x))
             data_dict[trad].append(trad_val)
 
-    saraga_path = os.path.join('data', 'saraga_1.0', 'saraga1.0')
-
-    for trad in ['Carnatic', 'Hindustani']:
-        trad_path = os.path.join(saraga_path, trad)
-        dirs = os.listdir(trad_path)
-        saraga_temp_data = defaultdict(list)
-        for d in dirs:
-            files = os.listdir(os.path.join(trad_path, d))
-
-            for f in files:
-                if f.endswith('.json'):
-                    name = f[:f.rindex('.json')]
-                    name = os.path.join(trad_path, d, name)
-                    info = get_info_json(name)
-                    if info is not None:
-                        saraga_temp_data['path'].append(info[0])
-                        saraga_temp_data['tonic'].append(info[1])
-                        saraga_temp_data['tradition'].append(trad)
-
-        data_dict[trad].append(pd.DataFrame(saraga_temp_data))
+    # saraga_path = os.path.join('data', 'saraga_1.0', 'saraga1.0')
+    #
+    # for trad in ['Carnatic', 'Hindustani']:
+    #     trad_path = os.path.join(saraga_path, trad)
+    #     dirs = os.listdir(trad_path)
+    #     saraga_temp_data = defaultdict(list)
+    #     for d in dirs:
+    #         files = os.listdir(os.path.join(trad_path, d))
+    #
+    #         for f in files:
+    #             if f.endswith('.json'):
+    #                 name = f[:f.rindex('.json')]
+    #                 name = os.path.join(trad_path, d, name)
+    #                 info = get_info_json(name)
+    #                 if info is not None:
+    #                     saraga_temp_data['path'].append(info[0])
+    #                     saraga_temp_data['tonic'].append(info[1])
+    #                     saraga_temp_data['tradition'].append(trad)
+    #
+    #     data_dict[trad].append(pd.DataFrame(saraga_temp_data))
 
 
     for k,v in data_dict.items():
-        if k=='Carnatic':
-            continue
+        # if k=='Carnatic':
+        #     continue
         v = pd.concat(v)
         v = v.drop_duplicates(subset=['path'], keep='first')
         v = v.reset_index(drop=True)
         v['tradition'] = v['tradition'].map(lambda x: x.lower())
         v['old_path'] = v['path']
         v['file_exist'] = v['path'].map(os.path.exists)
-        v['path'] = v['path'].apply(lambda x: mp3_to_wav(x))
+        v['len'] = v['path'].apply(lambda x: mp3_to_wav(x))
+        v['path'] = v['path'].apply(lambda x: mp3_to_wav_file(x))
         # mp3_file_moved_path = os.path.join(audio_data_path, mbid+'.mp3')
         # move_files(mp3_file, mp3_file_moved_path)
         # mp3_file_path.append(mp3_file_moved_path)
-        v = v.drop('tonic(hz)', axis=1)
+        v.to_csv(k+'.tsv', sep='\t')
+        # v = v.drop('tonic(hz)', axis=1)
         print(v.shape)
-        train, validate, test = train_validate_test_split(v, split[0], split[1])
+        # train, validate, test = train_validate_test_split(v, split[0], split[1])
+        train, test = utils.split_train_test(['data_type'], v)
+        train, validate = utils.split_train_test(['data_type'], train)
+
         train_path = os.path.join(data_path, 'TonicDataset', k, 'train.tsv')
         val_path = os.path.join(data_path,'TonicDataset', k, 'validate.tsv')
         test_path = os.path.join(data_path,'TonicDataset', k, 'test.tsv')
@@ -103,6 +118,12 @@ def create_tonic_test_train_split(config):
 #     except pydub.exceptions.CouldntDecodeError as ex:
 #         print('skipped file:', mp3_path)
 #         return -1
+
+def mp3_to_wav_file(mp3_path):
+    wav_path = mp3_path[mp3_path.rindex('/') + 1:]
+    wav_path = wav_path[: wav_path.rindex('.mp3')] + '.wav'
+    wav_path = os.path.join('data', 'TonicDataset', 'audio', wav_path)
+    return wav_path
 
 def mp3_to_wav(mp3_path, wav_path=None):
     print(mp3_path)
@@ -298,6 +319,30 @@ def fetch_by_index(rag_data, k, group_val, val_id, ragaId_to_ragaName, output_co
     rag_data[output_cols[4]] = tonic_fine_list
     rag_data[output_cols[5]] = label_list
 
+def shuffle_split(task, tradition):
+    config = pyhocon.ConfigFactory.parse_file("experiments.conf")[task]
+
+    processes = ['train', 'validate', 'test']
+    data_paths = []
+    data = []
+    for p in processes:
+        data_path = config[tradition+'_'+p]
+        data_paths.append(data_path)
+        temp = pd.read_csv(data_path, sep='\t')
+        data.append(temp)
+    data = pd.concat(data, axis=0)
+    if task=='tonic':
+        train, test = utils.split_train_test(['data_type'], data)
+        train, validate = utils.split_train_test(['data_type'], train)
+    else:
+        train, test = utils.split_train_test(['labels'], data, 0.10)
+        train, validate = utils.split_train_test(['labels'], train, 0.10)
+
+    train.to_csv(data_paths[0], sep='\t', index=False)
+    validate.to_csv(data_paths[1], sep='\t', index=False)
+    test.to_csv(data_paths[2], sep='\t', index=False)
+
+
 def move_files(path, mbid):
     # os.rename(path, mbid)
     copyfile(path, mbid)
@@ -311,14 +356,17 @@ def raga_train_test_split():
     create_raga_test_train_split(config_raga)
 
 if __name__ == '__main__':
-    arg_parser = argparse.ArgumentParser()
-    arg_parser.add_argument('--task', default=False, help='prepare train test split for tonic/raga')
-
-    p_args = arg_parser.parse_args()
-
-    if p_args.task == 'tonic':
-        tonic_train_test_split()
-    elif p_args.task == 'tonic':
-        raga_train_test_split()
-    else:
-        raise ValueError('task {} is not defined'.format(p_args.task))
+    # arg_parser = argparse.ArgumentParser()
+    # arg_parser.add_argument('--task', default=False, help='prepare train test split for tonic/raga')
+    #
+    # p_args = arg_parser.parse_args()
+    #
+    # if p_args.task == 'tonic':
+    #     tonic_train_test_split()
+    # elif p_args.task == 'tonic':
+    #     raga_train_test_split()
+    # else:
+    #     raise ValueError('task {} is not defined'.format(p_args.task))
+    # raga_train_test_split()
+    # tonic_train_test_split()
+    shuffle_split('raga', 'carnatic')
