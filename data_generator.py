@@ -22,7 +22,8 @@ class DataGenerator(Sequence):
         self.random = random
         hop_length = int(self.model_srate * self.step_size)
         self.task = task
-        self.n_labels = config['n_labels']
+        if task=='raga':
+            self.n_labels = config[tradition+'_n_labels']
         self.cutoff = config['cutoff']
         self.tradition = tradition
         self.sequence_length = int((config['sequence_length'] * self.model_srate - 1024) / hop_length) + 1
@@ -32,14 +33,29 @@ class DataGenerator(Sequence):
         # data = data.iloc[15:16,:]
 
         if full_length:
-            if process=='train' or process=='test':
-                data = pd.concat([data, data, data, data, data], axis=0)
-                data = data.reset_index(drop=True)
-            data['pitch_path'] = data['path'].apply(self.pitch_path)
+            if task=='raga':
+                pitch_col = 'path'
+            else:
+                pitch_col = 'old_path'
+
+            if process=='train' or process=='test' or process=='validate':
+                if task=='raga':
+                    data = pd.concat([data, data, data], axis=0)
+                    data = data.reset_index(drop=True)
+                else:
+                    # data = pd.concat([data, data, data], axis=0)
+                    data = data.reset_index(drop=True)
+            data['pitch_path'] = data[pitch_col].apply(self.pitch_path)
             data['id']= np.arange(data.shape[0])
             data['slice'] = 0
+
+            if task=='tonic':
+                data['mbid'] = data['path']
         else:
-            data = self.get_split_data(data, self.cutoff)
+            if task=='raga':
+                data = self.get_split_data_raga(data, self.cutoff)
+            else:
+                data = self.get_split_data_tonic(data, self.cutoff)
 
         # data = data.set_index('mbid')
         self.list_IDs = data['path']
@@ -56,32 +72,18 @@ class DataGenerator(Sequence):
         # self.indexes = np.arange(len(self.list_IDs))
         self.on_epoch_end()
 
-    # def get_split_data(self, data, cutoff):
-    #
-    #     all_data = []
-    #     id = 0
-    #     for path, file_len, tonic, label in data[['path', 'len', 'tonic_fine', 'labels']].values:
-    #         if label<5:
-    #             n_cutoff = int(file_len/cutoff)
-    #             for i in range(n_cutoff):
-    #                 json_data = {}
-    #                 json_data['id'] = id
-    #                 json_data['path'] = path
-    #                 json_data['slice'] = i
-    #                 json_data['tonic'] = tonic
-    #                 json_data['labels'] = label
-    #                 all_data.append(json_data)
-    #                 id+=1
-    #     df = pd.DataFrame(all_data)
-    #     df = df.set_index('id')
-    #     return df
-
     def pitch_path(self, path):
-        pp = path.replace('audio', 'pitches')
-        pp = pp[:pp.index('.wav')] + '.pitch'
+
+
+        if '.wav' in path:
+            pp = path.replace('audio', 'pitches')
+            pp = pp[:pp.index('.wav')] + '.pitch'
+        else:
+            pp = path.replace('audio', 'features')
+            pp = pp[:pp.index('.mp3')] + '.pit.txt'
         return pp
 
-    def get_split_data(self, data, cutoff):
+    def get_split_data_raga(self, data, cutoff):
 
         all_data = []
         id = 0
@@ -99,6 +101,29 @@ class DataGenerator(Sequence):
                 json_data['tonic'] = tonic
                 json_data['mbid'] = mbid
                 json_data['labels'] = label
+                all_data.append(json_data)
+                id+=1
+        df = pd.DataFrame(all_data)
+        df = df.set_index('id')
+        return df
+
+    def get_split_data_tonic(self, data, cutoff):
+
+        all_data = []
+        id = 0
+        for path, tonic, old_path, file_len in data[['path', 'tonic', 'old_path', 'len']].values:
+            n_cutoff = int(file_len/cutoff)
+            # n_cutoff = 1000
+            # cutoffs = np.random.randint(0,n_cutoff-1,1000)
+            for i in range(n_cutoff):
+                json_data = {}
+                json_data['id'] = id
+                json_data['path'] = path
+                pitch_path = self.pitch_path(old_path)
+                json_data['pitch_path'] = pitch_path
+                json_data['slice'] = i
+                json_data['tonic'] = tonic
+                json_data['mbid'] = path
                 all_data.append(json_data)
                 id+=1
         df = pd.DataFrame(all_data)
@@ -128,32 +153,17 @@ class DataGenerator(Sequence):
 
         if self.task=='tonic':
             path = self.data.loc[index, 'path']
-            # print(path)
-            slice_ind = None
-            if not self.random:
-                slice_ind = self.data.loc[index, 'slice']
+            mbid = self.data.loc[index, 'mbid']
+            slice_ind = self.data.loc[index, 'slice']
             tonic = self.data.loc[index, 'tonic']
-            y_tonic = self.freq_to_cents(tonic)
+            y_tonic = self.freq_to_cents(tonic, 25)
             y_tonic = np.reshape(y_tonic, [-1, 6, 60])
             y_tonic = np.sum(y_tonic, axis=1)
-
-            # y_tonic = np.array([y_tonic])
-            pitches = self.__data_generation_raga(index, path, slice_ind)
-            # X, pitches = self.__data_generation_pitch(index, path, slice_ind)
-            # X = [X]
+            pitches, cqt = self.__data_generation_tonic(index, path, mbid, slice_ind)
             pitches = np.array([pitches])
-
-            # label_freq = self.data.iloc[index, 2]
-            # print('label_freq', label_freq)
-            # label_freq = self.freq_to_cents(label_freq)
-            # label_freq = np.reshape(label_freq, [-1, 6, 60])
-            # y = np.sum(label_freq, axis=1)
-            transpose_by = np.random.randint(60, dtype=np.int32)
-            transpose_by = 0
-            y_tonic = np.roll(y_tonic, -transpose_by, axis=1)
-            transpose_by = np.array([transpose_by])
-
-            return {'pitches_input': pitches, 'transpose_input': transpose_by}, {'tonic': y_tonic}
+            # shuffle = np.array([self.shuffle], dtype=np.int32)
+            shuffle = np.array([False], dtype=np.int32)
+            return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt}, {'tf_op_layer_tonic': y_tonic}
         elif self.task=='raga':
             # index = 15
             path = self.data.loc[index, 'path']
@@ -261,7 +271,16 @@ class DataGenerator(Sequence):
         # pitch_path = pitch_path[:pitch_path.index('.wav')] + '.pitch'
         hop_length = int(self.model_srate * self.step_size)
         n_frames = 1 + int((self.cutoff*self.model_srate - 1024) / hop_length)
-        pitches, cqt = self.get_pitch_labels(pitch_path, path, mbid, self.step_size, n_frames, slice_ind)
+        pitches, cqt = self.get_pitch_labels_raga(pitch_path, path, mbid, self.step_size, n_frames, slice_ind)
+        return pitches, cqt
+
+    def __data_generation_tonic(self, index, path, mbid, slice_ind):
+        pitch_path = self.data.loc[index, 'pitch_path']
+        # pitch_path = path.replace('audio', 'pitches')
+        # pitch_path = pitch_path[:pitch_path.index('.wav')] + '.pitch'
+        hop_length = int(self.model_srate * self.step_size)
+        n_frames = 1 + int((self.cutoff*self.model_srate - 1024) / hop_length)
+        pitches, cqt = self.get_pitch_labels_tonic(pitch_path, path, mbid, self.step_size, n_frames, slice_ind)
         return pitches, cqt
         # pitches, _, _ = self.__data_generation(path, slice_ind)
         # return pitches[0]
@@ -362,14 +381,94 @@ class DataGenerator(Sequence):
     #     # return frames[:m], pitches[:m]
     #     return pitches
 
-    def get_pitch_labels(self, pitch_path, audio_path, mbid, hop_size, n_frames, slice_ind):
+    def get_pitch_labels_tonic(self, pitch_path, audio_path, mbid, hop_size, n_frames, slice_ind):
+        # audio_path = 'data\\TonicDataset\\audio\\15-mangalam.wav'
+        # pitch_path = 'data\\TonicDataset/IITM/audio/tonic_data2/tmkkamboji2folder/1-introduction.mp3'
+        st = 10.766601562499999778132305145264
+        # pitch_path = pitch_path.replace('/audio/', '/features/')
+        # pitch_path = self.fix_paths(pitch_path)
+        frequency_reference = 10
+        cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
+        # data = pd.read_csv(pitch_path, sep='\t')
+        data = pd.read_csv(pitch_path, sep='\t')
+        if self.full_length:
+            slice_ind = None
+            # n_frames = data.shape[0]
+        if self.random:
+            slice_ind = None
+
+        if data.shape[1]==2:
+            values = []
+            k=0
+            while k < data.shape[0]:
+                values.append(data.iloc[int(k),1])
+                k=k+st
+            data = pd.DataFrame(values)
+        else:
+            values = data.values[:,0]
+        # values = values[values!=0]
+        pitches = np.zeros([n_frames, 60])
+        k = 0
+        if slice_ind is None:
+            if n_frames>=data.shape[0]:
+                n_frames = data.shape[0]
+                values = data.values[:, 0]
+                pitches = np.zeros([n_frames, 60])
+            slice_ind = np.random.randint(0, data.shape[0] - n_frames+1)
+            for i in range(slice_ind, slice_ind + n_frames):
+                if values[i]!=0:
+                    freq = 1e-4 + values[i]
+                    c_true = 1200 * math.log(freq / frequency_reference, 2)
+                    target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                    target = np.sum(np.reshape(target, [6,60]), axis=0)
+                    pitches[k] = target
+                    # pitches[k] = np.tile(data.iloc[i:i+1,:]/6, (1,6))[0]
+                    # pitches[k] = data.iloc[i,:]
+                k += 1
+            cqt = self.get_cqt(mbid, audio_path, slice_ind, False)
+        else:
+            if (slice_ind+1)*n_frames<data.shape[0]:
+                for i in range(slice_ind*n_frames, (slice_ind+1)*n_frames):
+                    if i>=data.shape[0]:
+                        print('breaking')
+                        break
+                    if values[i] != 0:
+                        freq = 1e-6 + values[i]
+                        c_true = 1200 * math.log(freq / frequency_reference, 2)
+                        target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                        target = np.sum(np.reshape(target, [6,60]), axis=0)
+                        pitches[k] = target
+                        # pitches[k] = data.iloc[i, :]
+                    k += 1
+                cqt = self.get_cqt(mbid, audio_path, slice_ind*n_frames, False)
+            else:
+                for i in range(n_frames):
+                    if values[i] != 0:
+                        freq = 1e-6 + values[data.shape[0]+i-n_frames]
+                        c_true = 1200 * math.log(freq / frequency_reference, 2)
+                        target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                        target = np.sum(np.reshape(target, [6,60]), axis=0)
+                        pitches[k] = target
+                        # pitches[k] = data.iloc[i, :]
+                    k += 1
+                cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
+
+            # m = min(frames.shape[0], len(pitches))
+            # return frames[:m], pitches[:m]
+        pitches = pitches[np.sum(pitches, axis=1)!=0]
+
+        if len(pitches)==0 or len(cqt[0])==0:
+            print(pitch_path)
+        return pitches, cqt
+
+    def get_pitch_labels_raga(self, pitch_path, audio_path, mbid, hop_size, n_frames, slice_ind):
 
         # pitch_path = pitch_path.replace('/audio/', '/features/')
         # pitch_path = self.fix_paths(pitch_path)
         frequency_reference = 10
         cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
-        data = pd.read_csv(pitch_path, sep='\t')
-
+        # data = pd.read_csv(pitch_path, sep='\t')
+        data = pd.read_csv(pitch_path, sep=',')
         if self.full_length:
             slice_ind = None
             # n_frames = data.shape[0]
@@ -377,19 +476,22 @@ class DataGenerator(Sequence):
             slice_ind = None
 
         values = data.values[:,0]
-        pitches = np.zeros([n_frames, 360])
+        pitches = np.zeros([n_frames, 60])
         k = 0
         if slice_ind is None:
             if n_frames>=data.shape[0]:
                 n_frames = data.shape[0]
                 values = data.values[:, 0]
-                pitches = np.zeros([n_frames, 360])
+                pitches = np.zeros([n_frames, 60])
             slice_ind = np.random.randint(0, data.shape[0] - n_frames+1)
             for i in range(slice_ind, slice_ind + n_frames):
                 freq = 1e-4 + values[i]
                 c_true = 1200 * math.log(freq / frequency_reference, 2)
                 target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                target = np.sum(np.reshape(target, [6,60]), axis=0)
                 pitches[k] = target
+                # pitches[k] = np.tile(data.iloc[i:i+1,:]/6, (1,6))[0]
+                # pitches[k] = data.iloc[i,:]
                 k += 1
             cqt = self.get_cqt(mbid, audio_path, slice_ind, False)
         else:
@@ -401,7 +503,9 @@ class DataGenerator(Sequence):
                     freq = 1e-6 + values[i]
                     c_true = 1200 * math.log(freq / frequency_reference, 2)
                     target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                    target = np.sum(np.reshape(target, [6,60]), axis=0)
                     pitches[k] = target
+                    # pitches[k] = data.iloc[i, :]
                     k += 1
                 cqt = self.get_cqt(mbid, audio_path, slice_ind*n_frames, False)
             else:
@@ -409,7 +513,9 @@ class DataGenerator(Sequence):
                     freq = 1e-6 + values[data.shape[0]+i-n_frames]
                     c_true = 1200 * math.log(freq / frequency_reference, 2)
                     target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+                    target = np.sum(np.reshape(target, [6,60]), axis=0)
                     pitches[k] = target
+                    # pitches[k] = data.iloc[i, :]
                     k += 1
                 cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
 
@@ -480,8 +586,8 @@ class DataGenerator(Sequence):
         return chromagram
 
     def get_cqt(self, mbid, path, slice_ind_frames, last):
-        c_cqt  = self.lm_file[mbid]
-
+        c_cqt  = self.lm_file[mbid.lower()]
+        # c_cqt = self.lm_file[mbid]
 
         slice_ind_audio = int((slice_ind_frames - 1) * (self.step_size * self.model_srate) + 1024)
         slice_ind = int(((slice_ind_audio - 1024)/512)+1)
