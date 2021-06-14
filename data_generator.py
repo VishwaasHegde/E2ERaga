@@ -11,6 +11,7 @@ from resampy import resample
 from tensorflow.keras.layers import Lambda
 import tensorflow as tf
 import h5py
+import raga_feature
 
 class DataGenerator(Sequence):
     'Generates data for Keras'
@@ -35,17 +36,26 @@ class DataGenerator(Sequence):
         if full_length:
             if task=='raga':
                 pitch_col = 'path'
+                # pitch_col = 'old_path'
             else:
                 pitch_col = 'old_path'
 
             if process=='train' or process=='test' or process=='validate':
                 if task=='raga':
-                    data = pd.concat([data, data, data], axis=0)
-                    data = data.reset_index(drop=True)
+                    if process=='validate':
+                        data = pd.concat([data], axis=0)
+                        data = data.reset_index(drop=True)
+                    elif process=='train':
+                        data = pd.concat([data, data, data, data, data], axis=0)
+                        data = data.reset_index(drop=True)
+                    else:
+                        # data = pd.concat([data, data, data], axis=0)
+                        data = pd.concat([data], axis=0)
+                        data = data.reset_index(drop=True)
                 else:
                     # data = pd.concat([data, data, data], axis=0)
                     data = data.reset_index(drop=True)
-            data['pitch_path'] = data[pitch_col].apply(self.pitch_path)
+            data['pitch_path'] = data[pitch_col].apply(lambda x: self.pitch_path(x, old=True))
             data['id']= np.arange(data.shape[0])
             data['slice'] = 0
 
@@ -63,25 +73,62 @@ class DataGenerator(Sequence):
         self.shuffle = shuffle
         self.random = random
         self.full_length = full_length
-
+        self.all_notes, self.c_note = self.get_all_smooth_notes()
         bce = tf.keras.losses.BinaryCrossentropy()
         self.bce_layer = Lambda(lambda tensors: bce(tensors[0], tensors[1]))
 
         self.lm_file = h5py.File(config[tradition+'_cqt_cache'], "r")
-
+        self.process = process
+        self.raga_feat = np.zeros([12, 12, 60, 4])
         # self.indexes = np.arange(len(self.list_IDs))
         self.on_epoch_end()
 
-    def pitch_path(self, path):
+    def get_all_smooth_notes(self):
+        c_note = self.freq_to_cents_1(31.7 * 2, reduce=True)
+        all_notes = np.zeros([60, 60])
+        for p in range(60):
+            all_notes[p] = self.get_smooth_note(c_note, p)
 
+        return all_notes, c_note
+
+    def freq_to_cents_1(self, freq, std=25, reduce=False):
+        frequency_reference = 10
+        c_true = 1200 * math.log(freq / frequency_reference, 2)
+
+        cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
+        target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * std ** 2))
+
+        if reduce:
+            return np.sum(target.reshape([6, 60]), 0)
+        return target
+
+    def get_smooth_note(self, c_note, note):
+        return np.roll(c_note, note, axis=-1)
+
+    def pitch_path(self, path, old=False):
+        #     if old_path:
+        #         print(old_path)
+        #         pp = old_path.replace('audio', 'features')
+        #         pp = pp+'.pitch'
+        # #         pp = pp[:pp.index('.wav')] + '.pitch'
+        #
+        #         return pp
 
         if '.wav' in path:
-            pp = path.replace('audio', 'pitches')
-            pp = pp[:pp.index('.wav')] + '.pitch'
+            if old:
+                pp = path.replace('audio', 'pitches_orig')
+                pp = pp[:pp.index('.wav')] + '.tsv'
+            else:
+                pp = path.replace('audio', 'pitches')
+                pp = pp[:pp.index('.wav')] + '.pitch'
+            # pp = path.replace('audio', 'features')
+
+            # pp = pp[:pp.index('.wav')] + '.tsv'
         else:
             pp = path.replace('audio', 'features')
             pp = pp[:pp.index('.mp3')] + '.pit.txt'
         return pp
+
 
     def get_split_data_raga(self, data, cutoff):
 
@@ -95,7 +142,7 @@ class DataGenerator(Sequence):
                 json_data = {}
                 json_data['id'] = id
                 json_data['path'] = path
-                pitch_path = self.pitch_path(path)
+                pitch_path = self.pitch_path(path, old=True)
                 json_data['pitch_path'] = pitch_path
                 json_data['slice'] = i
                 json_data['tonic'] = tonic
@@ -173,14 +220,17 @@ class DataGenerator(Sequence):
             y_tonic = self.freq_to_cents(tonic, 25)
             y_tonic = np.reshape(y_tonic, [-1, 6, 60])
             y_tonic = np.sum(y_tonic, axis=1)
-            pitches, cqt = self.__data_generation_raga(index, path, mbid, slice_ind)
+            raga_feat, pitches, cqt = self.__data_generation_raga(index, path, mbid, y_tonic, slice_ind)
+            raga_feat = np.array([raga_feat])
             pitches = np.array([pitches])
             label = self.data.loc[index, 'labels']
             y_raga = to_categorical(label, num_classes=self.n_labels)
             y_raga = np.array([y_raga])
-            shuffle = np.array([self.shuffle], dtype=np.int32)
-            return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt}, {'raga': y_raga,
-                                                                                           'tf_op_layer_tonic': y_tonic}
+            shuffle = np.array([self.process=='train'], dtype=np.int32)
+            shuffle = np.array([False], dtype=np.int32)
+            # return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt}, {'raga': y_raga, 'tf_op_layer_tonic': y_tonic}
+            return {'pitches_input': pitches, 'raga_feature_input': raga_feat, 'random_input': shuffle, 'tonic_input': y_tonic}, {'raga': y_raga}
+            # return {'pitches_input': pitches, 'random_input': shuffle, 'cqt_input': cqt, 'tonic_input': y_tonic}, {'raga': y_raga}
         else:
             raise ValueError('Unknown task')
 
@@ -265,14 +315,14 @@ class DataGenerator(Sequence):
 
         return frames, pitches
 
-    def __data_generation_raga(self, index, path, mbid, slice_ind):
+    def __data_generation_raga(self, index, path, mbid, y_tonic, slice_ind):
         pitch_path = self.data.loc[index, 'pitch_path']
         # pitch_path = path.replace('audio', 'pitches')
         # pitch_path = pitch_path[:pitch_path.index('.wav')] + '.pitch'
         hop_length = int(self.model_srate * self.step_size)
         n_frames = 1 + int((self.cutoff*self.model_srate - 1024) / hop_length)
-        pitches, cqt = self.get_pitch_labels_raga(pitch_path, path, mbid, self.step_size, n_frames, slice_ind)
-        return pitches, cqt
+        raga_feat, pitches, cqt = self.get_pitch_labels_raga(pitch_path, path, mbid, self.step_size, n_frames, y_tonic, slice_ind)
+        return raga_feat, pitches, cqt
 
     def __data_generation_tonic(self, index, path, mbid, slice_ind):
         pitch_path = self.data.loc[index, 'pitch_path']
@@ -408,6 +458,7 @@ class DataGenerator(Sequence):
             values = data.values[:,0]
         # values = values[values!=0]
         pitches = np.zeros([n_frames, 60])
+
         k = 0
         if slice_ind is None:
             if n_frames>=data.shape[0]:
@@ -461,10 +512,12 @@ class DataGenerator(Sequence):
             print(pitch_path)
         return pitches, cqt
 
-    def get_pitch_labels_raga(self, pitch_path, audio_path, mbid, hop_size, n_frames, slice_ind):
+    def get_pitch_labels_raga(self, pitch_path, audio_path, mbid, hop_size, n_frames, y_tonic, slice_ind):
 
         # pitch_path = pitch_path.replace('/audio/', '/features/')
         # pitch_path = self.fix_paths(pitch_path)
+        # import time
+        # start = time.time()
         frequency_reference = 10
         cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
         # data = pd.read_csv(pitch_path, sep='\t')
@@ -476,53 +529,142 @@ class DataGenerator(Sequence):
             slice_ind = None
 
         values = data.values[:,0]
-        pitches = np.zeros([n_frames, 60])
+        pitches = np.zeros([1, 60])
+
+        # pitches = np.zeros([data.shape[0], 60])
+
         k = 0
         if slice_ind is None:
             if n_frames>=data.shape[0]:
                 n_frames = data.shape[0]
-                values = data.values[:, 0]
-                pitches = np.zeros([n_frames, 60])
+                # values = data.values[:, 0]
+                # pitches = np.zeros([n_frames, 60])
             slice_ind = np.random.randint(0, data.shape[0] - n_frames+1)
-            for i in range(slice_ind, slice_ind + n_frames):
-                freq = 1e-4 + values[i]
-                c_true = 1200 * math.log(freq / frequency_reference, 2)
-                target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
-                target = np.sum(np.reshape(target, [6,60]), axis=0)
-                pitches[k] = target
-                # pitches[k] = np.tile(data.iloc[i:i+1,:]/6, (1,6))[0]
-                # pitches[k] = data.iloc[i,:]
-                k += 1
-            cqt = self.get_cqt(mbid, audio_path, slice_ind, False)
-        else:
-            if (slice_ind+1)*n_frames<data.shape[0]:
-                for i in range(slice_ind*n_frames, (slice_ind+1)*n_frames):
-                    if i>=data.shape[0]:
-                        print('breaking')
-                        break
-                    freq = 1e-6 + values[i]
-                    c_true = 1200 * math.log(freq / frequency_reference, 2)
-                    target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
-                    target = np.sum(np.reshape(target, [6,60]), axis=0)
-                    pitches[k] = target
-                    # pitches[k] = data.iloc[i, :]
-                    k += 1
-                cqt = self.get_cqt(mbid, audio_path, slice_ind*n_frames, False)
-            else:
-                for i in range(n_frames):
-                    freq = 1e-6 + values[data.shape[0]+i-n_frames]
-                    c_true = 1200 * math.log(freq / frequency_reference, 2)
-                    target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
-                    target = np.sum(np.reshape(target, [6,60]), axis=0)
-                    pitches[k] = target
-                    # pitches[k] = data.iloc[i, :]
-                    k += 1
-                cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
+        #     for i in range(slice_ind, slice_ind + n_frames):
+        #         freq = 1e-4 + values[i]
+        #         c_true = 1200 * math.log(freq / frequency_reference, 2)
+        #         target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+        #         target = np.sum(np.reshape(target, [6,60]), axis=0)
+        #         pitches[k] = target
+        #         # pitches[k] = np.tile(data.iloc[i:i+1,:]/6, (1,6))[0]
+        #         # pitches[k] = data.iloc[i,:]
+        #         k += 1
+        #     cqt = self.get_cqt(mbid, audio_path, slice_ind, False)
+        # else:
+        #     if (slice_ind+1)*n_frames<data.shape[0]:
+        #         for i in range(slice_ind*n_frames, (slice_ind+1)*n_frames):
+        #             if i>=data.shape[0]:
+        #                 print('breaking')
+        #                 break
+        #             freq = 1e-6 + values[i]
+        #             c_true = 1200 * math.log(freq / frequency_reference, 2)
+        #             target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+        #             target = np.sum(np.reshape(target, [6,60]), axis=0)
+        #             pitches[k] = target
+        #             # pitches[k] = data.iloc[i, :]
+        #             k += 1
+        #         cqt = self.get_cqt(mbid, audio_path, slice_ind*n_frames, False)
+        #     else:
+        #         for i in range(n_frames):
+        #             freq = 1e-6 + values[data.shape[0]+i-n_frames]
+        #             c_true = 1200 * math.log(freq / frequency_reference, 2)
+        #             target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+        #             target = np.sum(np.reshape(target, [6,60]), axis=0)
+        #             pitches[k] = target
+        #             # pitches[k] = data.iloc[i, :]
+        #             k += 1
+        #         cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
 
             # m = min(frames.shape[0], len(pitches))
             # return frames[:m], pitches[:m]
 
-        return pitches, cqt
+        # pitches = np.roll(pitches, -np.argmax(y_tonic[0]), 1)
+        # pitches_arg = np.argmax(pitches, axis=1)
+        # raga_feat = raga_feature.get_all_raga_features(pitches_arg, np.ones_like(pitches_arg), self.c_note,  self.all_notes)
+        # end = time.time()
+
+        raga_feat = raga_feature.get_raga_feat_cache(mbid, slice_ind, n_frames, self.raga_feat, self.all_notes, self.tradition)
+        cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
+        # raga_feat = self.gauss_smooth(raga_feat)
+        # raga_feat = np.zeros([12,12,60,4])
+        # raga_feat = self.stadardize(raga_feat)
+        # print(end - start)
+        # cqt = np.roll(cqt, -np.argmax(y_tonic[0]),2)
+        # raga_feat = np.zeros([12,11,60,4])
+        return raga_feat, pitches, cqt
+
+    # def get_pitch_labels_raga(self, pitch_path, audio_path, mbid, hop_size, n_frames, slice_ind):
+    #     # pitch_path = pitch_path.replace('/audio/', '/features/')
+    #     pitch_path = self.fix_paths(pitch_path)
+    #     st = 7.0625
+    #     # pitch_path = pitch_path.replace('/audio/', '/features/')
+    #     # pitch_path = self.fix_paths(pitch_path)
+    #     frequency_reference = 10
+    #     cents_mapping = np.linspace(0, 7180, 360) + 1997.3794084376191
+    #
+    #     data = pd.read_csv(pitch_path, sep='\t')
+    #
+    #     values = []
+    #     k = 0
+    #     while k < data.shape[0]:
+    #         values.append(data.iloc[int(k), 1])
+    #         k = k + st
+    #     data = pd.DataFrame(values)
+    #
+    #     if self.full_length:
+    #         slice_ind = None
+    #         # n_frames = data.shape[0]
+    #     if self.random:
+    #         slice_ind = None
+    #
+    #     values = data.values[:,0]
+    #     pitches = np.zeros([n_frames, 60])
+    #     k = 0
+    #     if slice_ind is None:
+    #         if n_frames>=data.shape[0]:
+    #             n_frames = data.shape[0]
+    #             values = data.values[:, 0]
+    #             pitches = np.zeros([n_frames, 60])
+    #         slice_ind = np.random.randint(0, data.shape[0] - n_frames+1)
+    #         for i in range(slice_ind, slice_ind + n_frames):
+    #             freq = 1e-4 + values[i]
+    #             c_true = 1200 * math.log(freq / frequency_reference, 2)
+    #             target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+    #             target = np.sum(np.reshape(target, [6,60]), axis=0)
+    #             pitches[k] = target
+    #             # pitches[k] = np.tile(data.iloc[i:i+1,:]/6, (1,6))[0]
+    #             # pitches[k] = data.iloc[i,:]
+    #             k += 1
+    #         cqt = self.get_cqt(mbid, audio_path, slice_ind, False)
+    #     else:
+    #         if (slice_ind+1)*n_frames<data.shape[0]:
+    #             for i in range(slice_ind*n_frames, (slice_ind+1)*n_frames):
+    #                 if i>=data.shape[0]:
+    #                     print('breaking')
+    #                     break
+    #                 freq = 1e-6 + values[i]
+    #                 c_true = 1200 * math.log(freq / frequency_reference, 2)
+    #                 target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+    #                 target = np.sum(np.reshape(target, [6,60]), axis=0)
+    #                 pitches[k] = target
+    #                 # pitches[k] = data.iloc[i, :]
+    #                 k += 1
+    #             cqt = self.get_cqt(mbid, audio_path, slice_ind*n_frames, False)
+    #         else:
+    #             for i in range(n_frames):
+    #                 freq = 1e-6 + values[data.shape[0]+i-n_frames]
+    #                 c_true = 1200 * math.log(freq / frequency_reference, 2)
+    #                 target = np.exp(-(cents_mapping - c_true) ** 2 / (2 * 25 ** 2))
+    #                 target = np.sum(np.reshape(target, [6,60]), axis=0)
+    #                 pitches[k] = target
+    #                 # pitches[k] = data.iloc[i, :]
+    #                 k += 1
+    #             cqt = self.get_cqt(mbid, audio_path, slice_ind * n_frames, True)
+    #
+    #         # m = min(frames.shape[0], len(pitches))
+    #         # return frames[:m], pitches[:m]
+    #
+    #     return pitches, cqt
 
     def mp3_to_wav(self, mp3_path):
 
@@ -585,13 +727,42 @@ class DataGenerator(Sequence):
         # input()
         return chromagram
 
+    def stadardize(self, z):
+        return (z - np.mean(z)) / (np.std(z)+0.001)
+
+    def normalize(self, z):
+        z_min = np.min(z)
+        return (z - z_min) / (np.max(z) - z_min + 0.001)
+
+    def gauss_smooth(self, raga_feat):
+        smooth = np.zeros([12, 12, 60, 4])
+        for i in range(12):
+            for j in range(12):
+                for k in range(4):
+                    smooth[i, j, :, k] = self.gauss_smooth_util(raga_feat[i,j,:,k])
+        return smooth
+
+    def gauss_smooth_util(self, arr):
+        smooth = 0
+        for i in range(60):
+            #         if i==57 or i==58 or i==59 or i==0 or i==1 or i==2 or i==3:
+            #             continue
+            #         if i==57 or i==59 or i==0 or i==1 or i==2:
+            #             continue
+            smooth = smooth + self.all_notes[i] * arr[i]
+
+        smooth = self.stadardize(np.power(smooth, 1))
+        return smooth
+
     def get_cqt(self, mbid, path, slice_ind_frames, last):
+        return np.zeros([1,60, 60])
         c_cqt  = self.lm_file[mbid.lower()]
         # c_cqt = self.lm_file[mbid]
 
         slice_ind_audio = int((slice_ind_frames - 1) * (self.step_size * self.model_srate) + 1024)
         slice_ind = int(((slice_ind_audio - 1024)/512)+1)
         n_frames = int(((self.model_srate*self.cutoff - 1024)/512)+1)
+
         if not last:
             c_cqt = c_cqt[:,slice_ind:slice_ind+n_frames]
         else:
