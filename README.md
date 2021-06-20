@@ -1,5 +1,5 @@
 # E2ERaga
-This repository contains code for an end to end model for raga and tonic identification on audio samples
+This repository contains code for an end to end model for raga and tonic identification on audio samples\\
 A better user-friendly repositiory containing only the inference code can be accessed here - https://github.com/VishwaasHegde/CRETORA
 
 # Getting Started
