@@ -39,6 +39,34 @@ Steps to run:
 3. The model supports wav and mp3 file (--filetype defaults to wav if not provided), with mp3 there will be a delay in converting into wav format internally
 4. After this the raga label and the tonic frequency is outputted
 
+Demo videos:
+
+## Live Raga Prediction for Raga: Miyan Malhar
+
+(Click will redirect to youtube)
+
+[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/GC1MyaENUOc/0.jpg)](https://www.youtube.com/watch?v=GC1MyaENUOc)
+
+
+## Live Raga Prediction for Raga: Des
+
+
+[![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/K4Kv_Pypk1w/0.jpg)](https://www.youtube.com/watch?v=K4Kv_Pypk1w)
+
+
+### Hindustani Raga Embedding cosine similarity obtained from the model
+
+![alt text](https://github.com/VishwaasHegde/CRETORA/blob/main/images/hindustani_weights.png)
+
+### Carnatic Raga Embedding cosine similarity obtained from the model
+
+![alt text](https://github.com/VishwaasHegde/CRETORA/blob/main/images/carnatic_weights.png)
+
+Acknowledgments:
+1. The model uses [CREPE](https://github.com/marl/crepe) to find the pitches for the audio, I would like to thank [Jong Wook](https://github.com/jongwook) for clarifiying my questions
+2. Also thank [CompMusic](https://compmusic.upf.edu/node/328) and Sankalp Gulati for providing me the datasets
+
+
 Acknowledgments:
 1. The model uses [CREPE](https://github.com/marl/crepe) to find the pitches for the audio, I would like to thank [Jong Wook](https://github.com/jongwook) for clarifiying my questions
 2. Also thank [CompMusic](https://compmusic.upf.edu/node/328) and Sankalp Gulati for providing me the datasets
